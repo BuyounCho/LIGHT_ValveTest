@@ -1,0 +1,2410 @@
+#ifndef OW_QUAD
+#define OW_QUAD
+#include "Oinverse.h"
+#include "OW_RBDL.h"
+#include "BasicFiles/BasicSetting.h"
+#include "joint_inverse.h"
+extern pRBCORE_SHM_COMMAND     sharedCMD;
+
+class OW_Quad
+{
+
+    Oinverse Oi;
+public:
+    QuadPos QP;
+    QuadPos QP_controled;
+    QuadJoints QJ_CRef,QJ_CFF;
+private:
+    ONELEGFKIK Oii;
+    QuadJoints QJ;
+    WalkParams WP;
+    WalkParams WP_next;
+    bool walkchanged;
+
+    WalkSensors WS;
+    int Qcnt;
+    double t_now;
+    bool isRHLFmove;
+    bool isRmove;//for Pace
+    bool isHmove;//for Gallop
+    double upL;
+    double dsp_ratio;
+    double before_up_ratio;
+    double after_down_ratio;
+    double upRatio;
+    vec3 oldpRFx, oldpLFx, oldpRFy, oldpLFy, oldpFzH,oldpFzF, oldRotZ;
+    vec3 oldpRHx, oldpLHx, oldpRHy, oldpLHy;
+    vec3 FootTogoRF,FootTogoLF,FootTogoRH, FootTogoLH;
+    double FootTogoAngle;
+    bool isFirststep,isStopping, isFinishing;
+    double dt,g,e,w;
+    vec3 CP_nn,CP, COM_nn;
+    vec3 CP_est, CP_est_nn;
+    vec3 ZMP;
+    vec3 Next_ZMP_offset;
+    quat qPel_stepstart;
+    bool RFlanded, LFlanded, RHlanded,LHlanded;
+    int stopcnt;
+    double landing_fthres;
+    double landing_depth;
+    double noncontact_fthres;
+    vec3 IMUangle_I;
+    double FootZctFT[4],FootZctRef[4],dFootZctRef[4];
+    double dFootZ[4];
+    double ddFootZ[4];
+    bool FootonAir[4];
+    vec3 FootStep_ERR_I;
+    quat con_qPel;
+    vec3 con_rot;
+    vec3 ct,ct_ff;
+    OW_DYNAMICS OD;
+
+    bool RFcontact,LFcontact,RHcontact,LHcontact,firstCon;
+    bool RFlateland,LFlateland,RHlateland,LHlateland;
+    double foot_xlim, foot_ylim;
+    double RFz_ref, LFz_ref, RHz_ref, LHz_ref;
+    double RFz_con, LFz_con, RHz_con, LHz_con;
+    double RFz_des, LFz_des, RHz_des, LHz_des;
+
+    double trackingDelayTime;
+    MatrixNd Jqref;
+    VectorNd dXref;
+
+    double dmcol_RHP,dmcol_RKN;
+    bool conRHP,conRKN;
+    double mrefs[NO_OF_JOINTS];
+    double dmrefs[NO_OF_JOINTS];
+    double ddmrefs[NO_OF_JOINTS];
+    double ms[NO_OF_JOINTS], dms[NO_OF_JOINTS], Ains[NO_OF_JOINTS];
+
+public:
+    VectorNd Qnow, dQnow, ddQref, Qref, dQref, ddQnow, Tauout,Fcon;
+
+public:
+    bool isWalking;
+    bool isStandingControl;
+    double delZ;
+    QuadPos QP_est;
+    OW_Quad()
+    {
+        isStandingControl = false;
+        isWalking = false;
+        walkchanged = false;
+        upL = 0.05;//later 10cm up
+        dsp_ratio = 0.0;
+        before_up_ratio = 0.05;
+        after_down_ratio = 0.05;
+        upRatio = 0.4;
+        dt = 0.002;
+        g = 9.81;
+        e = M_E;
+        landing_fthres = 100;//100
+        noncontact_fthres = 50;
+        landing_depth = -0.01;//-0.01?
+        foot_xlim = foot_ylim = 0.18;//
+        trackingDelayTime = 0.024;
+        Jqref = MatrixNd::Zero(18,18);
+        dXref = VectorNd::Zero(18);
+    }
+    void COM_ZERO()
+    {
+        QP.pPel.z -=QP.pRF.z;
+        QP.pCOM.z -=QP.pRF.z;
+        QP.pLF.z -=QP.pRF.z;
+        QP.pRH.z -=QP.pRF.z;
+        QP.pLH.z -=QP.pRF.z;
+        QP.pRF.z = 0;
+
+        QP.pPel.x -=QP.pCOM.x;
+        QP.pPel.y -=QP.pCOM.y;
+        QP.pRF.x -=QP.pCOM.x;
+        QP.pRF.y -=QP.pCOM.y;
+        QP.pLF.x -=QP.pCOM.x;
+        QP.pLF.y -=QP.pCOM.y;
+        QP.pRH.x -=QP.pCOM.x;
+        QP.pRH.y -=QP.pCOM.y;
+        QP.pLH.x -=QP.pCOM.x;
+        QP.pLH.y -=QP.pCOM.y;
+        QP.pCOM.x = 0;
+        QP.pCOM.y = 0;
+
+    }
+    vec3 COM_old;
+    double FC_FB, FC_LR;
+    vec3 desCOM;
+    double ff,ll;
+    int cTT;
+    void init_Quad(QuadJoints _QJ, WalkParams _WP)
+    {
+        QJ = _QJ;
+        // QJ.qPel = quat(vec3(0,0,1),0.3);
+        oldRotZ = vec3(0,0,0);
+        qPel_stepstart = QJ.qPel;
+        QP = Oi.FK(QJ);
+        COM_ZERO();
+        QP_est = QP;
+        COM_old = QP.pCOM;
+        desCOM = QP.pCOM;
+        FC_FB = FC_LR = 0;
+
+        WP = _WP;
+        Qcnt = 0;
+        t_now = 0;
+        delZ = QP.pCOM.z-QP.pRF.z;
+        w = sqrtp(g/delZ);
+        isRHLFmove = true;
+        isRmove = true;
+        isHmove = true;
+        isFirststep = true;
+        isFinishing = false;
+        isStandingControl = false;
+        for(int i=0;i<4;i++)
+        {
+            FootZctFT[i] = 0.0;
+            FootZctRef[i] = 0.0;
+            dFootZctRef[i] = 0.0;
+            dFootZ[i]= 0.0;
+            FootonAir[i] = false;
+        }
+        LFlanded = RFlanded = LHlanded = RHlanded = false;
+        IMUangle_I = vec3(0,0,0);
+        FootStep_ERR_I = vec3(0,0,0);
+        con_qPel = quat();
+        con_rot = vec3(0,0,0);
+
+        Qnow = VectorNd::Zero(OD.Robot->q_size);
+        dQnow = VectorNd::Zero(OD.Robot->dof_count);
+        dQref = VectorNd::Zero(OD.Robot->dof_count);
+        Qref = VectorNd::Zero(OD.Robot->q_size);
+        ddQref = VectorNd::Zero(OD.Robot->dof_count);
+        ddQnow = VectorNd::Zero(OD.Robot->dof_count);
+        Tauout = VectorNd::Zero(12);
+        RFcontact=LFcontact=RHcontact=LHcontact=firstCon = true;
+        RFlateland=LFlateland=RHlateland=LHlateland =false;
+
+        RFz_ref = LFz_ref = RHz_ref = LHz_ref =0;
+        RFz_con = LFz_con = RHz_con = LHz_con =0;
+        RFz_des = LFz_des = RHz_des = LHz_des =0;
+    }
+
+    void start_standing_control(int _cTT = 0)
+    {
+        cTT = _cTT;
+        isStandingControl = true;
+        stopcnt = 100;
+    }
+    void stop_standing_control()
+    {
+        QJ_CRef.RHR = QJ_CRef.RHP = QJ_CRef.RKN = 0;
+        QJ_CRef.LHR = QJ_CRef.LHP = QJ_CRef.LKN = 0;
+        QJ_CRef.RSR = QJ_CRef.RSP = QJ_CRef.REB = 0;
+        QJ_CRef.LSR = QJ_CRef.LSP = QJ_CRef.LEB = 0;
+        isStandingControl = false;
+        isWalking = false;
+        save_all(1);
+    }
+    void start_Walking()
+    {
+        isWalking = true;
+        isStopping = true;
+        stopcnt = 15;
+    }
+
+    void stop_Walking()
+    {
+        WalkParams tWP = WP;
+        tWP.step_Rot = 0;
+        tWP.step_L = vec3(0,0,0);
+        isStopping = true;
+        stopcnt = 2;
+        changeWalk(tWP);
+
+    }
+    void changeWalk(WalkParams _WP)
+    {
+        WP_next = _WP;
+        walkchanged = true;
+    }
+    vec3 last_pCOM, oldpPel, last_dCOM, last_dpPel, dpCOM;
+    int cnt_fly;
+    QuadPos state_est2()
+    {
+        QuadPos QP_ss;
+        if(isnan(WS.JointPos.pPel.x)||isnan(WS.JointPos.pPel.y)||isnan(WS.JointPos.pPel.z))
+        {
+            WS.JointPos.pPel = vec3();
+        }
+        if(isnan(WS.JointPos.qPel[0])||isnan(WS.JointPos.qPel[1])||isnan(WS.JointPos.qPel[2])||isnan(WS.JointPos.qPel[3]))
+        {
+            WS.JointPos.qPel = quat();
+        }
+        if(RFcontact)
+        {
+            if(firstCon){QP_ss.pRF.z = 0;firstCon = false;}
+            QP_ss = Oi.FK_RF(WS.JointPos,QP.pRF);
+            //QP_ss = Oi.FK_RF(WS.JointPos,QP_ss.pRF);
+            WS.JointPos.pPel = QP_ss.pPel;
+
+            last_pCOM = QP_ss.pCOM;
+            cnt_fly = 0;
+        }
+        else if(LFcontact)
+        {
+            if(firstCon){QP_ss.pLF.z = 0;firstCon = false;}
+            QP_ss = Oi.FK_LF(WS.JointPos,QP.pLF);
+            //QP_ss = Oi.FK_LF(WS.JointPos,QP_ss.pLF);
+            WS.JointPos.pPel = QP_ss.pPel;
+
+            last_pCOM = QP_ss.pCOM;
+            cnt_fly = 0;
+        }
+        else if(RHcontact)
+        {
+            if(firstCon){QP_ss.pRH.z = 0;firstCon = false;}
+            QP_ss = Oi.FK_RH(WS.JointPos,QP.pRH);
+            //QP_ss = Oi.FK_RH(WS.JointPos,QP_ss.pRH);
+            WS.JointPos.pPel = QP_ss.pPel;
+
+            last_pCOM = QP_ss.pCOM;
+            cnt_fly = 0;
+        }
+        else if(LHcontact)
+        {
+            if(firstCon){QP_ss.pLH.z = 0;firstCon = false;}
+            QP_ss = Oi.FK_LH(WS.JointPos,QP.pLH);
+            //QP_ss = Oi.FK_LH(WS.JointPos,QP_ss.pLH);
+            WS.JointPos.pPel = QP_ss.pPel;
+
+            last_pCOM = QP_ss.pCOM;
+            cnt_fly = 0;
+        }
+        else
+        {
+            cnt_fly++;
+            QP_ss = Oi.FK(WS.JointPos);
+
+            vec3 temp_mod = last_pCOM + last_dCOM*(cnt_fly*dt) + 0.5*vec3(0,0,-9.81)*(cnt_fly*dt)*(cnt_fly*dt) - QP_ss.pCOM;
+            dpCOM = last_dCOM + vec3(0,0,-9.81)*(cnt_fly*dt);
+            QP_ss.pCOM = QP_ss.pCOM + temp_mod;
+            QP_ss.pPel = QP_ss.pPel + temp_mod;
+            QP_ss.pRF = QP_ss.pRF + temp_mod;
+            QP_ss.pLF = QP_ss.pLF + temp_mod;
+            QP_ss.pRH = QP_ss.pRH + temp_mod;
+            QP_ss.pLH = QP_ss.pLH + temp_mod;
+
+            WS.JointPos.pPel = QP_ss.pPel;
+            firstCon = true;
+        }
+
+
+        // WS.JointVel.dpPel = (WS.JointPos.pPel-oldpPel)/dt;
+
+
+
+        //should be global, not local
+        //t2 = mat3(WS.IMUquat)*WS.IMULocalW;//why.....
+
+
+        WS.JointVel.dqPel =WS.IMUomega;//local, but should be global?????? ask kangkyu
+
+        Qnow = OD.Joints2Q(WS.JointPos);
+        dQnow = OD.Joints2dQ(WS.JointVel);
+
+        //Calculation dpPel
+        //copythis------------------------------------
+        if(Qcnt ==0) oldpPel = WS.JointPos.pPel;
+        vec3 dpPelNumeric = (WS.JointPos.pPel-oldpPel)/dt;
+        oldpPel = WS.JointPos.pPel;
+        VectorNd Qtemp = Qnow;
+        VectorNd dQrdot = dQnow;
+        vec3 Fomega;
+        Vector3d LFVel;
+        vec3 drdt;
+
+        Qtemp[0] = 0.0; Qtemp[1] = 0.0; Qtemp[2] = 0.0; Qtemp[3] = 0.0; Qtemp[4] = 0.0; Qtemp[5] = 0.0; Qtemp[18] =1.0;
+        dQrdot[0] = 0.0; dQrdot[1] = 0.0; dQrdot[2] = 0.0; dQrdot[3] = 0.0; dQrdot[4] = 0.0; dQrdot[5] = 0.0;
+
+        OD.CalcEndeffectorJacobian3D(Qtemp);//local frame jacobian
+
+
+
+
+        vec3 IMUomega2 = mat3(WS.IMUquat)*WS.IMUomega;//inverse???/
+        if(RFcontact)
+        {
+            Fomega = cross(IMUomega2,(QP_ss.pPel-QP_ss.pRF));
+            LFVel =  -(OD.JacobianRF3D * dQrdot);
+
+            vec3 EGHA = vec3(LFVel[0],LFVel[1],LFVel[2]);
+            EGHA = WS.JointPos.qPel*EGHA;
+            drdt = Fomega + EGHA;
+            WS.JointVel.dpPel = drdt;//if want to use Calculation velocity
+        }
+        else if(LFcontact)
+        {
+            Fomega = cross(IMUomega2,(QP_ss.pPel-QP_ss.pLF));
+            LFVel =  -(OD.JacobianLF3D * dQrdot);
+
+            vec3 EGHA = vec3(LFVel[0],LFVel[1],LFVel[2]);
+            EGHA = WS.JointPos.qPel*EGHA;
+            drdt = Fomega + EGHA;
+            WS.JointVel.dpPel = drdt;//if want to use Calculation velocity
+        }
+        else if(RHcontact)
+        {
+            Fomega = cross(IMUomega2,(QP_ss.pPel-QP_ss.pRH));
+            LFVel =  -(OD.JacobianRH3D * dQrdot);
+
+            vec3 EGHA = vec3(LFVel[0],LFVel[1],LFVel[2]);
+            EGHA = WS.JointPos.qPel*EGHA;
+            drdt = Fomega + EGHA;
+            WS.JointVel.dpPel = drdt;//if want to use Calculation velocity
+        }
+        else if(LHcontact)
+        {
+            Fomega = cross(IMUomega2,(QP_ss.pPel-QP_ss.pLH));
+            LFVel =  -(OD.JacobianLH3D * dQrdot);
+
+            vec3 EGHA = vec3(LFVel[0],LFVel[1],LFVel[2]);
+            EGHA = WS.JointPos.qPel*EGHA;
+            drdt = Fomega + EGHA;
+            WS.JointVel.dpPel = drdt;//if want to use Calculation velocity
+        }
+        else{
+
+            Vector3d PELCOMVEL = OD.JacobianCOMall3D*dQrdot;
+            WS.JointVel.dpPel = dpCOM + cross(IMUomega2,QP_ss.pPel-QP_ss.pCOM) + vec3(PELCOMVEL[0],PELCOMVEL[1],PELCOMVEL[2]);
+
+        }
+        //WS.JointVel.dpPel = dpPelNumeric;//if want to use numeric
+        last_dpPel = WS.JointVel.dpPel;
+        QP_ss.dCOM = vec3(OD.COMdot[0],OD.COMdot[1],OD.COMdot[2]);
+
+        Qnow = OD.Joints2Q(WS.JointPos);
+        dQnow = OD.Joints2dQ(WS.JointVel);
+        OD.CalcCOMMomentum(Qnow,dQnow);
+        if (cnt_fly==0)  last_dCOM = vec3(OD.COMdot[0],OD.COMdot[1],OD.COMdot[2]);
+
+        return QP_ss;
+
+    }
+    void calc_ddQref(vec3 _ddpCOMref, vec3 ddqPELref, vec3 ddpRFref, vec3 ddpLFref, vec3 ddpRHref, vec3 ddpLHref)
+    {
+        //            OD.CalcEndeffectorJacobian3D(Qref);
+        //            OD.CalcCOMJacobian3D(Qref);
+
+        MatrixNd Jqref = MatrixNd::Zero(18,18);
+        Jqref.block(0,0,3,18) = OD.JacobianCOMall3D;
+        Jqref.block(3,3,3,3) = MatrixNd::Identity(3,3);
+        Jqref.block(6,0,3,18) = OD.JacobianRF3D;
+        Jqref.block(9,0,3,18) = OD.JacobianLF3D;
+        Jqref.block(12,0,3,18) = OD.JacobianRH3D;
+        Jqref.block(15,0,3,18) = OD.JacobianLH3D;
+
+        VectorNd ddXref = VectorNd::Zero(18);
+        ddXref.segment(0,3) = Vector3d(_ddpCOMref.x,_ddpCOMref.y,_ddpCOMref.z);
+        ddXref.segment(3,3) = Vector3d(ddqPELref.x,ddqPELref.y,ddqPELref.z);
+        ddXref.segment(6,3) = Vector3d(ddpRFref.x,ddpRFref.y,ddpRFref.z);
+        ddXref.segment(9,3) = Vector3d(ddpLFref.x,ddpLFref.y,ddpLFref.z);
+        ddXref.segment(12,3) = Vector3d(ddpRHref.x,ddpRHref.y,ddpRHref.z);
+        ddXref.segment(15,3) = Vector3d(ddpLHref.x,ddpLHref.y,ddpLHref.z);
+
+        VectorNd ddqZero = VectorNd::Zero(18);
+        Vector3d dJdqpCOM = (Oi.m_torso * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_torso,Vector3d(Oi.c_torso.x,Oi.c_torso.y,Oi.c_torso.z))
+                             + Oi.m_rhr * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_rhr,Vector3d(Oi.c_rhr.x,Oi.c_rhr.y,Oi.c_rhr.z))
+                             + Oi.m_rhp * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_rhp,Vector3d(Oi.c_rhp.x,Oi.c_rhp.y,Oi.c_rhp.z))
+                             + Oi.m_rkn * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_rkn,Vector3d(Oi.c_rkn.x,Oi.c_rkn.y,Oi.c_rkn.z))
+
+                             + Oi.m_lhr * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_lhr,Vector3d(Oi.c_lhr.x,Oi.c_lhr.y,Oi.c_lhr.z))
+                             + Oi.m_lhp * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_lhp,Vector3d(Oi.c_lhp.x,Oi.c_lhp.y,Oi.c_lhp.z))
+                             + Oi.m_lkn * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_lkn,Vector3d(Oi.c_lkn.x,Oi.c_lkn.y,Oi.c_lkn.z))
+
+                             + Oi.m_rsr * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_rsr,Vector3d(Oi.c_rsr.x,Oi.c_rsr.y,Oi.c_rsr.z))
+                             + Oi.m_rsp * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_rsp,Vector3d(Oi.c_rsp.x,Oi.c_rsp.y,Oi.c_rsp.z))
+                             + Oi.m_reb * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_reb,Vector3d(Oi.c_reb.x,Oi.c_reb.y,Oi.c_reb.z))
+
+                             + Oi.m_lsr * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_lsr,Vector3d(Oi.c_lsr.x,Oi.c_lsr.y,Oi.c_lsr.z))
+                             + Oi.m_lsp * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_lsp,Vector3d(Oi.c_lsp.x,Oi.c_lsp.y,Oi.c_lsp.z))
+                             + Oi.m_leb * CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_leb,Vector3d(Oi.c_leb.x,Oi.c_leb.y,Oi.c_leb.z)))/Oi.M_total;
+        Vector3d dJdqqPel = Vector3d::Zero(3); //dJ/dt = 0
+        Vector3d dJdqRF = CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_rkn,Vector3d(Oi.offset_lleg.x,Oi.offset_lleg.y,Oi.offset_lleg.z));
+        Vector3d dJdqLF = CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_lkn,Vector3d(Oi.offset_lleg.x,Oi.offset_lleg.y,Oi.offset_lleg.z));
+        Vector3d dJdqRH = CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_reb,Vector3d(Oi.offset_lleg.x,Oi.offset_lleg.y,Oi.offset_lleg.z));
+        Vector3d dJdqLH = CalcPointAcceleration(*(OD.Robot),Qref,dQref,ddqZero,OD.n_leb,Vector3d(Oi.offset_lleg.x,Oi.offset_lleg.y,Oi.offset_lleg.z));
+
+        VectorNd dJdq = VectorNd::Zero(18);
+        dJdq.segment(0,3) = dJdqpCOM;
+        dJdq.segment(3,3) = dJdqqPel;
+        dJdq.segment(6,3) = dJdqRF;
+        dJdq.segment(9,3) = dJdqLF;
+        dJdq.segment(12,3) = dJdqRH;
+        dJdq.segment(15,3) = dJdqLH;
+
+        ddQref = Jqref.inverse()*ddXref - dJdq;
+    }
+    void calc_dQref(vec3 _dpCOMref, vec3 dqPELref, vec3 dpRFref, vec3 dpLFref, vec3 dpRHref, vec3 dpLHref)
+    {
+        OD.CalcEndeffectorJacobian3D(Qref);
+        OD.CalcCOMJacobian3D(Qref);
+
+
+        Jqref.block(0,0,3,18) = OD.JacobianCOMall3D;
+        Jqref.block(3,3,3,3) = MatrixNd::Identity(3,3);
+        Jqref.block(6,0,3,18) = OD.JacobianRF3D;
+        Jqref.block(9,0,3,18) = OD.JacobianLF3D;
+        Jqref.block(12,0,3,18) = OD.JacobianRH3D;
+        Jqref.block(15,0,3,18) = OD.JacobianLH3D;
+
+
+        dXref.segment(0,3) = Vector3d(_dpCOMref.x,_dpCOMref.y,_dpCOMref.z);
+        dXref.segment(3,3) = Vector3d(dqPELref.x,dqPELref.y,dqPELref.z);
+        dXref.segment(6,3) = Vector3d(dpRFref.x,dpRFref.y,dpRFref.z);
+        dXref.segment(9,3) = Vector3d(dpLFref.x,dpLFref.y,dpLFref.z);
+        dXref.segment(12,3) = Vector3d(dpRHref.x,dpRHref.y,dpRHref.z);
+        dXref.segment(15,3) = Vector3d(dpLHref.x,dpLHref.y,dpLHref.z);
+
+        dQref = Jqref.inverse()*dXref;
+
+    }
+    QuadPos state_est()
+    {
+        QuadPos QP_ee = QP;
+        if(Qcnt==0)
+        {
+            return QP_ee;
+        }
+        //        mat3 IMUrotx = mat3(vec3(-1,0,0),WS.IMUangle.x);
+        //        mat3 IMUroty = mat3(vec3(0,-1,0),WS.IMUangle.y);
+        //        mat3 IMUrot = IMUrotx*IMUroty;
+
+        //        QP_ee.pCOM = ZMP + IMUrot*(QP.pCOM-ZMP);
+        //        vec3 Rotvel = cross(WS.IMUomega,QP.pCOM-ZMP);
+        //        QP_ee.dCOM = IMUrot*(QP.dCOM) + Rotvel;//wrong here!!!!!
+
+        RFcontact = !FootonAir[0];
+        LFcontact = !FootonAir[1];
+        RHcontact = !FootonAir[2];
+        LHcontact = !FootonAir[3];
+        vec3 FrontVt = mat3(qPel_stepstart)*vec3(1,0,0);
+        FrontVt = FrontVt-dot(FrontVt,vec3(0,0,1))*vec3(0,0,1);
+        vec3 FrontVector = FrontVt.normalize();//not really...
+        vec3 LeftVector = cross(vec3(0,0,1),FrontVector).normalize();
+
+        QuadPos QP_ss = state_est2();
+        mat3 IMUrotx = mat3(vec3(-1,0,0),WS.IMUangle.x);
+        mat3 IMUroty = mat3(vec3(0,-1,0),WS.IMUangle.y);
+        mat3 IMUrot = IMUrotx*IMUroty;
+
+        double LeftOff = dot(LeftVector,QP.pCOM-ZMP);
+        double FrontOff = dot(FrontVector,QP.pCOM-ZMP);
+        double ZOff = dot(vec3(0,0,1),QP.pCOM-ZMP);
+
+        vec3 FOff = FrontVector*(FrontOff*cos(WS.IMUangle.y)+ZOff*sin(WS.IMUangle.y));
+        vec3 LOff = LeftVector*(LeftOff*cos(-WS.IMUangle.x)+ZOff*sin(-WS.IMUangle.x));
+
+
+
+        //QP_ee.pCOM = ZMP + IMUrot*(QP.pCOM-ZMP);
+        QP_ee.pCOM = ZMP + FOff+LOff+vec3(0,0,1)*ZOff;
+        //QP_ee.pCOM = ZMP + IMUrot*(QP.pCOM-ZMP);
+        QP_ss.pCOM = QP_ee.pCOM;//hmm....
+
+        return QP_ss;//
+    }
+
+
+    MatrixNd pinv(MatrixNd in)
+    {
+        Eigen::JacobiSVD<MatrixNd> _svd(in,Eigen::ComputeThinU|Eigen::ComputeThinV);
+        double tol = 1e-4;
+        return _svd.matrixV()*(_svd.singularValues().array().abs()>tol).select(_svd.singularValues().array().inverse(),0).matrix().asDiagonal()*_svd.matrixU().adjoint();
+    }
+    double FFzref_alpha = 0.2;//0.995;
+    void FFz_ref_ssp()//2foot standing
+    {
+        double Mg =700*4;//to be always early landing
+        if(isRHLFmove)
+        {
+            double of = (ZMP-QP.pLH).norm();
+            double ob = (ZMP-QP.pRF).norm();
+
+            LHz_ref = FFzref_alpha*LHz_ref + (1-FFzref_alpha)*Mg*(of)/(of+ob);
+            RFz_ref = FFzref_alpha*RFz_ref + (1-FFzref_alpha)*Mg*(ob)/(of+ob);
+
+            RHz_ref = 0;
+            LFz_ref = 0;
+        }
+        else
+        {
+            double of = (ZMP-QP.pRH).norm();
+            double ob = (ZMP-QP.pLF).norm();
+
+            RHz_ref = FFzref_alpha*RHz_ref + (1-FFzref_alpha)*Mg*(of)/(of+ob);
+            LFz_ref = FFzref_alpha*LFz_ref + (1-FFzref_alpha)*Mg*(ob)/(of+ob);
+
+            LHz_ref = 0;
+            RFz_ref = 0;
+        }
+    }
+    void FFz_ref()//3~4foot standing//3foot?
+    {
+        MatrixNd A;
+        A = MatrixNd::Zero(3,4);
+        MatrixNd B;
+        B = MatrixNd::Zero(3,1);
+        double Mg =700*4;
+
+        A(0,0) = 1;
+        A(0,1) = 1;
+        A(0,2) = 1;
+        A(0,3) = 1;
+        A(1,0) = QP.pRF.x;
+        A(1,1) = QP.pLF.x;
+        A(1,2) = QP.pRH.x;
+        A(1,3) = QP.pLH.x;
+        A(2,0) = QP.pRF.y;
+        A(2,1) = QP.pLF.y;
+        A(2,2) = QP.pRH.y;
+        A(2,3) = QP.pLH.y;
+        B(0,0) = Mg;
+        B(1,0) = Mg*ZMP.x;
+        B(2,0) = Mg*ZMP.y;
+
+        MatrixNd C = pinv(A)*B;//pseudoinverse
+        RFz_ref = FFzref_alpha*RFz_ref + (1-FFzref_alpha)*C(0,0);
+        LFz_ref = FFzref_alpha*LFz_ref + (1-FFzref_alpha)*C(1,0);
+        RHz_ref = FFzref_alpha*RHz_ref + (1-FFzref_alpha)*C(2,0);
+        LHz_ref = FFzref_alpha*LHz_ref + (1-FFzref_alpha)*C(3,0);
+    }
+    void DSP_control()
+    {
+        double Kpy = 0.01*R2Df*4.0;
+        double Kdy = 0.000*R2Df;
+        double Kpx = 0.005*R2Df*4.0;
+        double Kdx = 0.000*R2Df;
+        FC_FB = (+ Kpy*WS.IMUangle.y  + Kdy*WS.IMUomega.y);
+        FC_LR = -(- Kpx*WS.IMUangle.x - Kdx*WS.IMUomega.x);
+        double MaxFC = 0.05;
+        if(FC_FB> MaxFC){FC_FB = MaxFC;}
+        if(FC_FB<-MaxFC){FC_FB =-MaxFC;}
+        if(FC_LR> MaxFC){FC_LR = MaxFC;}
+        if(FC_LR<-MaxFC){FC_LR =-MaxFC;}
+
+        dFootZctRef[0] = (FC_FB-FC_LR);
+        dFootZctRef[1] = (FC_FB+FC_LR);
+        dFootZctRef[2] = (-FC_FB-FC_LR);
+        dFootZctRef[3] = (-FC_FB+FC_LR);
+
+        for(int i=0;i<4;i++)
+        {
+            FootZctRef[i] = FootZctRef[i]+dFootZctRef[i]*dt;
+            double MaxCon = 0.05;
+            if(FootZctRef[i]>MaxCon){FootZctRef[i] = MaxCon; }
+            if(FootZctRef[i]<-MaxCon){FootZctRef[i] = -MaxCon; }
+        }
+
+
+        RFz_des = RFz_ref;//+RFz_con;
+        LFz_des = LFz_ref;//+LFz_con;
+        RHz_des = RHz_ref;//+RHz_con;
+        LHz_des = LHz_ref;//+LHz_con;
+        //if F = 1400
+        //X= 0.03;
+        //K = 0.03/1400
+        //
+        //B/M = 2*z*w;
+        //K/M = w*w;
+        //M to be 700;//1m/s^2
+        double M = 700.0;
+        double K = M*2.0/0.03*2*0.5*2.0;
+        double B = M*1.0*2.0*sqrt(K/M);//critically damped
+
+        double FootF[4] = {WS.RF_Fz,WS.LF_Fz,WS.RH_Fz,WS.LH_Fz};
+        double F0[4] = {RFz_des, LFz_des, RHz_des, LHz_des};
+
+
+        for(int i=0;i<4;i++)
+        {
+            ddFootZ[i] = (FootF[i]-F0[i]-B*(dFootZ[i]-dFootZctRef[i])-K*(FootZctFT[i]-FootZctRef[i]))/M;
+            double MaxV = 0.6;
+            double MaxCon = 0.05;
+            dFootZ[i] = dFootZ[i]+ddFootZ[i]*dt;
+            if(dFootZ[i]>MaxV){dFootZ[i] = MaxV; }
+            if(dFootZ[i]<-MaxV){dFootZ[i] = -MaxV;}
+            FootZctFT[i] = FootZctFT[i]+dFootZ[i]*dt;
+            if(FootZctFT[i]>MaxCon){FootZctFT[i] = MaxCon; dFootZ[i] = 0;}
+            if(FootZctFT[i]<-MaxCon){FootZctFT[i] = -MaxCon; dFootZ[i] = 0;}
+        }
+    }
+    void SSP_control()
+    {
+        //        double Kpy = 0.01*R2Df*2.0;
+        //        double Kdy = 0.000*R2Df;
+        //        FC_FB = (+ Kpy*WS.IMUangle.y  + Kdy*WS.IMUomega.y);
+        //        double MaxFC = 0.05;
+        //        if(FC_FB> MaxFC){FC_FB = MaxFC;}
+        //        if(FC_FB<-MaxFC){FC_FB =-MaxFC;}
+
+        //        dFootZctRef[0] = (FC_FB);
+        //        dFootZctRef[1] = (FC_FB);
+        //        dFootZctRef[2] = (-FC_FB);
+        //        dFootZctRef[3] = (-FC_FB);
+
+        double Kpy = 0.01*R2Df*2.0;
+        double Kdy = 0.000*R2Df;
+        double Kpx = 0.005*R2Df*2.0;
+        double Kdx = 0.000*R2Df;
+        FC_FB = (+ Kpy*WS.IMUangle.y  + Kdy*WS.IMUomega.y);
+        FC_LR = -(- Kpx*WS.IMUangle.x - Kdx*WS.IMUomega.x);
+        double MaxFC = 0.05;
+        if(FC_FB> MaxFC){FC_FB = MaxFC;}
+        if(FC_FB<-MaxFC){FC_FB =-MaxFC;}
+        if(FC_LR> MaxFC){FC_LR = MaxFC;}
+        if(FC_LR<-MaxFC){FC_LR =-MaxFC;}
+
+        dFootZctRef[0] = (FC_FB-FC_LR);
+        dFootZctRef[1] = (FC_FB+FC_LR);
+        dFootZctRef[2] = (-FC_FB-FC_LR);
+        dFootZctRef[3] = (-FC_FB+FC_LR);
+
+        bool do_control[4] = {true,true,true,true};
+        if(isRHLFmove)
+        {
+            do_control[0] = do_control[3] = true;
+            do_control[1] = do_control[2] = false;
+            //            if(WS.RF_Fz<noncontact_fthres){RFlateland = true;}
+            //            if(WS.LH_Fz<noncontact_fthres){LHlateland = true;}
+            LFlateland = false;
+            RHlateland = false;
+        }
+        else
+        {
+            do_control[0] = do_control[3] = false;
+            do_control[1] = do_control[2] = true;
+            //            if(WS.LF_Fz<noncontact_fthres){LFlateland = true;}
+            //            if(WS.RH_Fz<noncontact_fthres){RHlateland = true;}
+            RFlateland = false;
+            LHlateland = false;
+        }
+
+        for(int i=0;i<4;i++)
+        {
+            if(do_control[i])
+            {
+                FootZctRef[i] = FootZctRef[i]+dFootZctRef[i]*dt;
+                double MaxCon = 0.05;
+                if(FootZctRef[i]>MaxCon){FootZctRef[i] = MaxCon; }
+                if(FootZctRef[i]<-MaxCon){FootZctRef[i] = -MaxCon; }
+            }
+            else
+            {
+                FootZctRef[i] =0;
+                dFootZctRef[i] = 0.0;
+            }
+        }
+
+
+        RFz_des = RFz_ref;//+RFz_con;
+        LFz_des = LFz_ref;//+LFz_con;
+        RHz_des = RHz_ref;//+RHz_con;
+        LHz_des = LHz_ref;//+LHz_con;
+        //if F = 1400
+        //X= 0.03;
+        //K = 0.03/1400
+        //
+        //B/M = 2*z*w;
+        //K/M = w*w;
+        //M to be 700;//1m/s^2
+        bool lateland[4] = {RFlateland, LFlateland, RHlateland, LHlateland};
+
+        double FootF[4] = {WS.RF_Fz,WS.LF_Fz,WS.RH_Fz,WS.LH_Fz};
+        double F0[4] = {RFz_des, LFz_des, RHz_des, LHz_des};
+
+        for(int i=0;i<4;i++)
+        {
+            if(lateland[i])
+            {
+                do_control[i] = false;
+                FootonAir[i] = false;
+                double M = 200.0;
+                double K = M*2.0/0.03;
+                double B = M*1.0*2.0*sqrt(K/M);//*0.3;//critically damped
+                ddFootZ[i] = (FootF[i]-F0[i]-B*(dFootZ[i]-dFootZctRef[i])-K*(FootZctFT[i]-FootZctRef[i]))/M;
+                double MaxV = 0.6;
+                double MaxCon = 0.05;
+                dFootZ[i] = dFootZ[i]+ddFootZ[i]*dt;
+                if(dFootZ[i]>MaxV){dFootZ[i] = MaxV; }
+                if(dFootZ[i]<-MaxV){dFootZ[i] = -MaxV;}
+                FootZctFT[i] = FootZctFT[i]+dFootZ[i]*dt;
+                if(FootZctFT[i]>MaxCon){FootZctFT[i] = MaxCon; dFootZ[i] = 0;}
+                if(FootZctFT[i]<-MaxCon){FootZctFT[i] = -MaxCon; dFootZ[i] = 0;}
+                if(FootF[i]>landing_fthres)
+                {
+                    lateland[i] = false;
+                    printf("latelanded %d\n",i);
+                    FootZctFT[i] = FootZctFT[i] - dFootZ[i]*trackingDelayTime/2;
+                    dFootZ[i] = 0;
+                }
+
+            }
+        }
+        RFlateland = lateland[0];
+        LFlateland = lateland[1];
+        RHlateland = lateland[2];
+        LHlateland = lateland[3];
+
+
+
+
+        for(int i=0;i<4;i++)
+        {
+            double M = 700.0;
+            double K = M*2.0/0.03*2.0*2.0;
+            double B = M*1.0*2.0*sqrt(K/M);//critically damped
+            if(FootonAir[i]==false)
+            {do_control[i] = true;}
+            if(do_control[i])
+            {
+                ddFootZ[i] = (FootF[i]-F0[i]-B*(dFootZ[i]-dFootZctRef[i])-K*(FootZctFT[i]-FootZctRef[i]))/M;
+                double MaxV = 0.6;
+                double MaxCon = 0.05;
+                dFootZ[i] = dFootZ[i]+ddFootZ[i]*dt;
+                if(dFootZ[i]>MaxV){dFootZ[i] = MaxV; }
+                if(dFootZ[i]<-MaxV){dFootZ[i] = -MaxV;}
+                FootZctFT[i] = FootZctFT[i]+dFootZ[i]*dt;
+                if(FootZctFT[i]>MaxCon){FootZctFT[i] = MaxCon; dFootZ[i] = 0;}
+                if(FootZctFT[i]<-MaxCon){FootZctFT[i] = -MaxCon; dFootZ[i] = 0;}
+            }
+            else
+            {
+                FootZctFT[i] = 0.95*FootZctFT[i];
+                dFootZ[i] = 0;
+            }
+        }
+    }
+
+    int ffcnt,ffcntMax;
+    double Fzdes, colV;
+    double offkv;
+    QuadJoints StandingControl_onestep(WalkSensors _WS)
+    {
+        WS = _WS;
+
+        ZMP.x = QP.pCOM.x;//no ddCOM now
+        ZMP.y = QP.pCOM.y;
+        ZMP.z = QP.pLF.z;
+        isFirststep = false;
+
+        RFcontact = LFcontact = RHcontact = LHcontact = true;
+        QP_est = state_est();
+        if(Qcnt>50)
+        {
+            if(cTT==0)
+            {
+//                FFz_ref();
+//                DSP_control();
+            }
+            if(cTT==2)//just torque controlled standing
+            {
+                QP_controled = QP;
+                QP_controled.pRF.z =QP.pRF.z + FootZctFT[0];
+                QP_controled.pLF.z =QP.pLF.z + FootZctFT[1];
+                QP_controled.pRH.z =QP.pRH.z + FootZctFT[2];
+                QP_controled.pLH.z =QP.pLH.z + FootZctFT[3];
+
+
+
+                QJ_CRef.RHR = QJ_CRef.RHP = QJ_CRef.RKN = 0;
+                QJ_CRef.LHR = QJ_CRef.LHP = QJ_CRef.LKN = 0;
+                QJ_CRef.RSR = QJ_CRef.RSP = QJ_CRef.REB = 0;
+                QJ_CRef.LSR = QJ_CRef.LSP = QJ_CRef.LEB = 0;
+
+                Qref = OD.Joints2Q(Oi.IK_COM(QP));
+                calc_dQref(vec3(0,0,0),vec3(),
+                           vec3(0,0,oldpFzF[1]),vec3(),vec3(),vec3());//dQref
+                calc_ddQref(vec3(0,0,0),vec3(),
+                            vec3(0,0,oldpFzF[2]),vec3(),vec3(),vec3());//ddQref
+                //Current control here
+                //Q,dQ,ddQref to m,dm,ddmRef
+
+
+                double effM = 0.3321;
+                double fric= 0.1016;
+                double MaxA = 5;
+                double Kp = 120.0;//Kp/effM = w*w => w = 13.44
+                double Kd = 15.0;//Kd/effM = 2*w*z => z = 1.7 ?
+
+
+                ms[RHP]= Oii.q2m_hp(WS.JointPosEnc.RHP);
+                dms[RHP] = Oii.dq2dm_hp(WS.JointPosEnc.RHP,WS.JointVel.RHP);
+                ms[LHP]= Oii.q2m_hp(WS.JointPosEnc.LHP);
+                dms[LHP] = Oii.dq2dm_hp(WS.JointPosEnc.LHP,WS.JointVel.LHP);
+                ms[RSP]= Oii.q2m_hp(WS.JointPosEnc.RSP);
+                dms[RSP] = Oii.dq2dm_hp(WS.JointPosEnc.RSP,WS.JointVel.RSP);
+                ms[LSP]= Oii.q2m_hp(WS.JointPosEnc.LSP);
+                dms[LSP] = Oii.dq2dm_hp(WS.JointPosEnc.LSP,WS.JointVel.LSP);
+
+
+                ms[RKN]= Oii.q2m_kn(WS.JointPosEnc.RKN);
+                dms[RKN] = Oii.dq2dm_kn(WS.JointPosEnc.RKN,WS.JointVel.RKN);
+                ms[LKN]= Oii.q2m_kn(WS.JointPosEnc.LKN);
+                dms[LKN] = Oii.dq2dm_kn(WS.JointPosEnc.LKN,WS.JointVel.LKN);
+                ms[REB]= Oii.q2m_kn(WS.JointPosEnc.REB);
+                dms[REB] = Oii.dq2dm_kn(WS.JointPosEnc.REB,WS.JointVel.REB);
+                ms[LEB]= Oii.q2m_kn(WS.JointPosEnc.LEB);
+                dms[LEB] = Oii.dq2dm_kn(WS.JointPosEnc.LEB,WS.JointVel.LEB);
+
+
+                for(int i=0;i<NO_OF_JOINTS;i++)
+                {
+                    if(i==RHR||i==RSR||i==LHR||i==LSR)
+                    {
+                        //do_nothing
+                    }
+                    else if(i==RHP||i==RSP||i==LHP||i==LSP)
+                    {
+                        mrefs[i] = Oii.q2m_hp(Qref[6+i]);
+                        dmrefs[i] = Oii.dq2dm_hp(Qref[6+i],dQref[6+i]);
+                        ddmrefs[i] = Oii.ddq2ddm_hp(Qref[6+i],dQref[6+i],ddQref[6+i]);
+                        Ains[i] = Kp*(mrefs[i]-ms[i])+Kd*(dmrefs[i]-dms[i])+effM*ddmrefs[i];
+                    }
+                    else
+                    {
+                        mrefs[i] = Oii.q2m_kn(Qref[6+i]);
+                        dmrefs[i] = Oii.dq2dm_kn(Qref[6+i],dQref[6+i]);
+                        ddmrefs[i] = Oii.ddq2ddm_kn(Qref[6+i],dQref[6+i],ddQref[6+i]);
+                        Ains[i] = Kp*(mrefs[i]-ms[i])+Kd*(dmrefs[i]-dms[i])+effM*ddmrefs[i];
+                    }
+                    if(dmrefs[i]>0){Ains[i]+=fric;}
+                    if(dmrefs[i]<0){Ains[i]-=fric;}
+                    if(Ains[i]>MaxA){Ains[i] = MaxA;}
+                    if(Ains[i]<-MaxA){Ains[i] = -MaxA;}
+                }
+                QJ_CRef.RHP = Ains[RHP];
+                QJ_CRef.LHP = Ains[LHP];
+                QJ_CRef.RSP = Ains[RSP];
+                QJ_CRef.LSP = Ains[LSP];
+
+                QJ_CRef.RKN = Ains[RKN];
+                QJ_CRef.LKN = Ains[LKN];
+                QJ_CRef.REB = Ains[REB];
+                QJ_CRef.LEB = Ains[LEB];
+
+                //calc JT-F from foot
+                //maybe have to change from Qref to Qnow
+                Qnow = OD.Joints2Q(WS.JointPosEnc);
+                OD.CalcEndeffectorJacobian3D(Qnow);
+                double MG = Oi.M_total*g;
+                VectorNd FFoot = VectorNd::Zero(3);
+                FFoot[2] = -0.25*MG;
+                VectorNd TF = OD.JacobianRF3D.transpose()*FFoot;
+                VectorNd TTF = TF;
+                TTF[6+RHR] = TF[6+RHR];
+                TTF[6+RHP] = TF[6+RHP];
+                TTF[6+RKN] = TF[6+RKN];
+                TF = OD.JacobianLF3D.transpose()*FFoot;
+                TTF[6+LHR] = TF[6+LHR];
+                TTF[6+LHP] = TF[6+LHP];
+                TTF[6+LKN] = TF[6+LKN];
+                TF = OD.JacobianRH3D.transpose()*FFoot;
+                TTF[6+RSR] = TF[6+RSR];
+                TTF[6+RSP] = TF[6+RSP];
+                TTF[6+REB] = TF[6+REB];
+                TF = OD.JacobianLH3D.transpose()*FFoot;
+                TTF[6+LSR] = TF[6+LSR];
+                TTF[6+LSP] = TF[6+LSP];
+                TTF[6+LEB] = TF[6+LEB];
+
+                QJ_CFF.RHR = Oii.T2CR*(TTF[6+RHR]/Oii.R_GR);
+                QJ_CFF.RHP = 0.5*Oii.T2CP*(TTF[6+RHP]*Oii.J_hp(Oii.q2m_hp(Qnow[6+RHP])));
+                QJ_CFF.RKN = 0.5*Oii.T2CP*(TTF[6+RKN]*Oii.J_kn(Oii.q2m_kn(Qnow[6+RKN])));
+
+                QJ_CFF.LHR = Oii.T2CR*(TTF[6+LHR]/Oii.R_GR);
+                QJ_CFF.LHP = 0.5*Oii.T2CP*(TTF[6+LHP]*Oii.J_hp(Oii.q2m_hp(Qnow[6+LHP])));
+                QJ_CFF.LKN = 0.5*Oii.T2CP*(TTF[6+LKN]*Oii.J_kn(Oii.q2m_kn(Qnow[6+LKN])));
+
+                QJ_CFF.RSR = Oii.T2CR*(TTF[6+RSR]/Oii.R_GR);
+                QJ_CFF.RSP = 0.5*Oii.T2CP*(TTF[6+RSP]*Oii.J_hp(Oii.q2m_hp(Qnow[6+RSP])));
+                QJ_CFF.REB = 0.5*Oii.T2CP*(TTF[6+REB]*Oii.J_kn(Oii.q2m_kn(Qnow[6+REB])));
+
+                QJ_CFF.LSR = Oii.T2CR*(TTF[6+LSR]/Oii.R_GR);
+                QJ_CFF.LSP = 0.5*Oii.T2CP*(TTF[6+LSP]*Oii.J_hp(Oii.q2m_hp(Qnow[6+LSP])));
+                QJ_CFF.LEB = 0.5*Oii.T2CP*(TTF[6+LEB]*Oii.J_kn(Oii.q2m_kn(Qnow[6+LEB])));
+
+
+//                cout<<"Qref"<<endl<<Qref<<endl;
+
+//                cout<<"JRF"<<endl<<OD.JacobianRF3D<<endl;
+//                cout<<"JLF"<<endl<<OD.JacobianLF3D<<endl;
+
+//                cout<<"J_hp "<<Oii.J_hp(Oii.q2m_hp(Qref[6+RHP]))<<endl;
+//                cout<<"J_kn "<<Oii.J_kn(Oii.q2m_hp(Qref[6+RHP]))<<endl;
+
+//                cout<<"C_hp "<<QJ_CFF.RHP<<endl;
+//                cout<<"C_kn "<<QJ_CFF.RKN<<endl;
+
+//                isStandingControl = false;
+
+
+            }
+            if(cTT==1)
+            {
+                VectorNd FpszF;
+                double step_T = 0.4;
+                if(t_now>step_T+0.5*dt)//+? -?
+                {
+                    t_now = 0;
+                    isRHLFmove = !isRHLFmove;
+                    if(isRHLFmove)
+                    {
+                        RFlanded = true;
+
+
+                    }
+                    else
+                    {
+                        RFlanded = false;
+                        RFlateland = false;
+                    }
+                    stopcnt--;
+                    if(stopcnt<0)
+                    {
+                        isStandingControl = false;
+                        isWalking = false;
+                        save_all(1);
+                    }
+
+                }
+                double st_5,st_4,st_3,st_2,st_1;
+                st_1 = t_now;
+                st_2 = st_1*st_1;
+                st_3 = st_2*st_1;
+                st_4 = st_3*st_1;
+                st_5 = st_4*st_1;
+                double t_u = step_T*(1.0-dsp_ratio)*upRatio;
+
+                if(t_now<t_u+0.5*dt)
+                {
+                    FpszF = calc_5th((t_now-dt),t_u,oldpFzF,vec3(0.1,0,0));
+
+                }
+                else
+                {
+                    FpszF = calc_5th((t_now-dt),step_T*(1.0-dsp_ratio),oldpFzF,vec3(0.00,0,0));
+                    //+= late landing
+                    //-= early landing
+                }
+
+                if(isRHLFmove==true)
+                {
+                    oldpFzF[0] = QP.pRF.z;
+                    oldpFzF[1] = 0;
+                    oldpFzF[2] = 0;
+//                    double tleft = step_T-t_now;
+//                    if(tleft>dt)
+//                    {QP.pRF.z = (tleft-dt)/(tleft)*QP.pRF.z;}
+//                    else
+//                    {
+//                        QP.pRF.z = 0;
+//                    }
+                    if(WS.RF_Fz<noncontact_fthres){RFlateland = true;}
+                }
+                else
+                {
+                    if(RFlanded==false)
+                    {
+                        QP.pRF.z =FpszF[0]*st_5 + FpszF[1]*st_4 + FpszF[2]*st_3 + FpszF[3]*st_2 + FpszF[4]*st_1 + FpszF[5];
+                        oldpFzF[0] =QP.pRF.z;
+                        oldpFzF[1] = 5*FpszF[0]*st_4 + 4*FpszF[1]*st_3 + 3*FpszF[2]*st_2 + 2*FpszF[3]*st_1 + FpszF[4];
+                        oldpFzF[2] = 20*FpszF[0]*st_3 + 12*FpszF[1]*st_2 + 6*FpszF[2]*st_1 + 2*FpszF[3];
+                    }
+                    else
+                    {
+
+                    }
+                    if(t_now>t_u + (step_T*(1.0-dsp_ratio)-t_u)*0.3)
+                    {
+                        if(RFlanded==false)
+                        {
+                            if(WS.RF_Fz>landing_fthres)
+                            {
+                                RFlanded = true; oldpFzF[1] = 0; oldpFzF[2] = 0;FootonAir[0] = false; printf("RFlanded\n");
+                                //0.02 second ahead
+                                st_1 = t_now-trackingDelayTime;//or + 0.005*0.5; so, maybe 0.03 is almost precise
+                                st_2 = st_1*st_1;
+                                st_3 = st_2*st_1;
+                                st_4 = st_3*st_1;
+                                st_5 = st_4*st_1;
+                                Fzdes = FpszF[0]*st_5 + FpszF[1]*st_4 + FpszF[2]*st_3 + FpszF[3]*st_2 + FpszF[4]*st_1 + FpszF[5];
+                                colV = 5*FpszF[0]*st_4 + 4*FpszF[1]*st_3 + 3*FpszF[2]*st_2 + 2*FpszF[3]*st_1 + FpszF[4];
+                                offkv = 0.04;
+                                ffcntMax = 20;
+                                ffcnt = ffcntMax;
+                                QP.pRF.z = Fzdes;// - colV*offkv;
+                                //lets do input shaping
+                                //about 0.04s, 20step of undershooting reference
+
+
+                            }
+                        }
+                        else//not doing input shaping is best so far
+                        {
+//                            ffcnt--;
+//                            if(ffcnt<0)
+//                            {
+//                                QP.pRF.z = Fzdes;
+//                            }
+//                            else
+//                            {
+//                                QP.pRF.z = Fzdes - colV*offkv*pow(0.9,(ffcntMax-ffcnt));
+//                            }
+                        }
+                    }
+                }
+                double FootF[4] = {WS.RF_Fz,WS.LF_Fz,WS.RH_Fz,WS.LH_Fz};
+                double F0[4] = {700, 700, 700, 700};
+
+                if(RFlateland==true)
+                {
+                }
+                else if(RFlanded==true)
+                {
+                }
+                else
+                {
+                    FootZctFT[0] = 0.95*FootZctFT[0];
+                    dFootZ[0] = 0;
+
+                }
+
+                t_now+=dt;
+
+
+        if(fabs(WS.IMUangle.x*R2Df)>20){printf("x direction fall!n\n"); isStandingControl = false; save_all(1);}
+        if(fabs(WS.IMUangle.y*R2Df)>20){printf("y direction fall!n\n"); isStandingControl = false; save_all(1);}
+
+
+
+        save_onestep(Qcnt);
+        Qcnt++;
+
+
+        QP_controled = QP;
+        QP_controled.pRF.z =QP.pRF.z + FootZctFT[0];
+        QP_controled.pLF.z =QP.pLF.z + FootZctFT[1];
+        QP_controled.pRH.z =QP.pRH.z + FootZctFT[2];
+        QP_controled.pLH.z =QP.pLH.z + FootZctFT[3];
+
+
+
+        QJ_CRef.RHR = QJ_CRef.RHP = QJ_CRef.RKN = 0;
+        QJ_CRef.LHR = QJ_CRef.LHP = QJ_CRef.LKN = 0;
+        QJ_CRef.RSR = QJ_CRef.RSP = QJ_CRef.REB = 0;
+        QJ_CRef.LSR = QJ_CRef.LSP = QJ_CRef.LEB = 0;
+
+        Qref = OD.Joints2Q(Oi.IK_COM(QP));
+        calc_dQref(vec3(0,0,0),vec3(),
+                   vec3(0,0,oldpFzF[1]),vec3(),vec3(),vec3());//dQref
+        calc_ddQref(vec3(0,0,0),vec3(),
+                    vec3(0,0,oldpFzF[2]),vec3(),vec3(),vec3());//ddQref
+        //Current control here
+        //Q,dQ,ddQref to m,dm,ddmRef
+
+        double mrefs[NO_OF_JOINTS];
+        double dmrefs[NO_OF_JOINTS];
+        double ddmrefs[NO_OF_JOINTS];
+        double effM = 0.3321;
+        double fric= 0.1016;
+        double MaxA = 5;
+        double Kp = 120.0;//Kp/effM = w*w => w = 13.44
+        double Kd = 15.0;//Kd/effM = 2*w*z => z = 1.7 ?
+        double ms[NO_OF_JOINTS], dms[NO_OF_JOINTS], Ains[NO_OF_JOINTS];
+
+        ms[RHP]= Oii.q2m_hp(WS.JointPosEnc.RHP);
+        dms[RHP] = Oii.dq2dm_hp(WS.JointPosEnc.RHP,WS.JointVel.RHP);
+        ms[LHP]= Oii.q2m_hp(WS.JointPosEnc.LHP);
+        dms[LHP] = Oii.dq2dm_hp(WS.JointPosEnc.LHP,WS.JointVel.LHP);
+        ms[RSP]= Oii.q2m_hp(WS.JointPosEnc.RSP);
+        dms[RSP] = Oii.dq2dm_hp(WS.JointPosEnc.RSP,WS.JointVel.RSP);
+        ms[LSP]= Oii.q2m_hp(WS.JointPosEnc.LSP);
+        dms[LSP] = Oii.dq2dm_hp(WS.JointPosEnc.LSP,WS.JointVel.LSP);
+
+
+        ms[RKN]= Oii.q2m_kn(WS.JointPosEnc.RKN);
+        dms[RKN] = Oii.dq2dm_kn(WS.JointPosEnc.RKN,WS.JointVel.RKN);
+        ms[LKN]= Oii.q2m_kn(WS.JointPosEnc.LKN);
+        dms[LKN] = Oii.dq2dm_kn(WS.JointPosEnc.LKN,WS.JointVel.LKN);
+        ms[REB]= Oii.q2m_kn(WS.JointPosEnc.REB);
+        dms[REB] = Oii.dq2dm_kn(WS.JointPosEnc.REB,WS.JointVel.REB);
+        ms[LEB]= Oii.q2m_kn(WS.JointPosEnc.LEB);
+        dms[LEB] = Oii.dq2dm_kn(WS.JointPosEnc.LEB,WS.JointVel.LEB);
+
+
+        for(int i=0;i<NO_OF_JOINTS;i++)
+        {
+            if(i==RHR||i==RSR||i==LHR||i==LSR)
+            {
+                //do_nothing
+            }
+            else if(i==RHP||i==RSP||i==LHP||i==LSP)
+            {
+                mrefs[i] = Oii.q2m_hp(Qref[6+i]);
+                dmrefs[i] = Oii.dq2dm_hp(Qref[6+i],dQref[6+i]);
+                ddmrefs[i] = Oii.ddq2ddm_hp(Qref[6+i],dQref[6+i],ddQref[6+i]);
+                Ains[i] = Kp*(mrefs[i]-ms[i])+Kd*(dmrefs[i]-dms[i])+effM*ddmrefs[i];
+            }
+            else
+            {
+                mrefs[i] = Oii.q2m_kn(Qref[6+i]);
+                dmrefs[i] = Oii.dq2dm_kn(Qref[6+i],dQref[6+i]);
+                ddmrefs[i] = Oii.ddq2ddm_kn(Qref[6+i],dQref[6+i],ddQref[6+i]);
+                Ains[i] = Kp*(mrefs[i]-ms[i])+Kd*(dmrefs[i]-dms[i])+effM*ddmrefs[i];
+            }
+            if(dmrefs[i]>0){Ains[i]+=fric;}
+            if(dmrefs[i]<0){Ains[i]-=fric;}
+            if(Ains[i]>MaxA){Ains[i] = MaxA;}
+            if(Ains[i]<-MaxA){Ains[i] = -MaxA;}
+        }
+        QJ_CRef.RHP = Ains[RHP];
+        QJ_CRef.LHP = Ains[LHP];
+        QJ_CRef.RSP = Ains[RSP];
+        QJ_CRef.LSP = Ains[LSP];
+
+        QJ_CRef.RKN = Ains[RKN];
+        QJ_CRef.LKN = Ains[LKN];
+        QJ_CRef.REB = Ains[REB];
+        QJ_CRef.LEB = Ains[LEB];
+
+
+        if(RFlanded==true)//do_feedforward something
+        {
+            if(conRHP)
+            {
+                if(dmcol_RHP>0)
+                {
+                    if(dms[RHP]>0)
+                    {
+                        QJ_CRef.RHP = -2.0;
+                    }
+                    else
+                    {
+                        conRHP = false;
+                    }
+                }
+                else
+                {
+                    if(dms[RHP]<0)
+                    {
+                        QJ_CRef.RHP = 2.0;
+                    }
+                    else
+                    {
+                        conRHP = false;
+                    }
+                }
+            }
+            else//tracking?
+            {
+
+            }
+        }
+        else
+        {
+            dmcol_RHP = dms[RHP];
+            conRHP = true;
+        }
+
+
+        if(RFlanded==true)//do_feedforward something
+        {
+
+            if(conRKN)
+            {
+                if(dmcol_RKN>0)
+                {
+                    if(dms[RKN]>0)
+                    {
+                        QJ_CRef.RKN = -2.0;
+                    }
+                    else
+                    {
+                        conRKN = false;
+                    }
+                }
+                else
+                {
+                    if(dms[RKN]<0)
+                    {
+                        QJ_CRef.RKN = 2.0;
+                    }
+                    else
+                    {
+                        conRKN = false;
+                    }
+                }
+            }
+            else//tracking?
+            {
+
+            }
+        }
+        else
+        {
+            dmcol_RKN = dms[RKN];
+            conRKN = true;
+        }
+    }
+
+        }
+        else
+        {
+            t_now = 0;
+            oldpFzF[0] = QP.pRF.z;
+            oldpFzF[1] = 0;
+            oldpFzF[2] = 0;
+        }
+        if(fabs(WS.IMUangle.x*R2Df)>20){printf("x direction fall!n\n"); isStandingControl = false; save_all(1);}
+        if(fabs(WS.IMUangle.y*R2Df)>20){printf("y direction fall!n\n"); isStandingControl = false; save_all(1);}
+
+
+
+        save_onestep(Qcnt);
+        Qcnt++;
+
+
+        QP_controled = QP;
+        QP_controled.pRF.z =QP.pRF.z + FootZctFT[0];
+        QP_controled.pLF.z =QP.pLF.z + FootZctFT[1];
+        QP_controled.pRH.z =QP.pRH.z + FootZctFT[2];
+        QP_controled.pLH.z =QP.pLH.z + FootZctFT[3];
+    //return Oi.IK_COM(QP);
+    return Oi.IK_COM(QP_controled);
+
+}
+
+QuadJoints Walk_onestep(WalkSensors _WS)
+{
+    WS = _WS;
+    vec3 realStepL;
+
+    if(t_now>WP.step_T+0.5*dt)
+    {
+        if(WP.Gait==TrotWalk)
+        {
+            if(isRHLFmove)
+            {
+                realStepL = (QP.pRH+QP.pLF)/2-(QP.pLH+QP.pRF)/2;
+            }
+            else
+            {
+                realStepL = (QP.pLH+QP.pRF)/2-(QP.pRH+QP.pLF)/2;
+            }
+        }
+        vec3 FrontVt = mat3(qPel_stepstart)*vec3(1,0,0);
+        FrontVt = FrontVt-dot(FrontVt,vec3(0,0,1))*vec3(0,0,1);
+        vec3 FrontVector = FrontVt.normalize();//not really...
+        vec3 LeftVector = cross(vec3(0,0,1),FrontVector).normalize();
+
+        desCOM = desCOM + FrontVector*(WP.step_L.x) +LeftVector*(WP.step_L.y);
+        double kk = 0.05;
+        ff = kk*dot(FrontVector,(desCOM-QP.pCOM));
+        ll = kk*dot(LeftVector,(desCOM-QP.pCOM));
+        if(ff>0.1){ff = 0.1;}
+        if(ff<-0.1){ff = -0.1;}
+        if(ll>0.1){ll = 0.1;}
+        if(ll<-0.1){ll = -0.1;}
+
+        cout<<"ff "<<ff<<"ll "<<ll<<endl;
+        isRHLFmove = !isRHLFmove;
+        isRmove = !isRmove;
+        isHmove = !isHmove;
+        isFirststep = false;
+        printf("nextstep! realStepL%f %f %f\n",realStepL.x, realStepL.y,realStepL.z);
+        oldRotZ = vec3(0,0,0);
+        oldpFzF = vec3(0,0,0);
+        oldpFzH = vec3(0,0,0);
+        t_now =0;
+        qPel_stepstart = QP.qPel;
+        if(isRHLFmove)//late_landing
+        {
+            if(WS.RF_Fz<noncontact_fthres){RFlateland = true;}
+            if(WS.LH_Fz<noncontact_fthres){LHlateland = true;}
+        }
+        else
+        {
+            if(WS.LF_Fz<noncontact_fthres){LFlateland = true;}
+            if(WS.RH_Fz<noncontact_fthres){RHlateland = true;}
+        }
+        if(isFinishing)
+        {
+            //later finishcnt should be added for additional control
+            isWalking = false;
+            save_all();
+        }
+        if(isStopping)
+        {
+            stopcnt--;
+            if(stopcnt<0)
+            {
+                isStopping = false;
+                isFinishing = true;
+            }
+        }
+
+    }
+    if(realStepL.norm()>0.2){printf("too much step!n\n"); isWalking = false; save_all(2);}
+    if(fabs(WS.IMUangle.x*R2Df)>10){printf("x direction fall!n\n"); isWalking = false; save_all(2);}
+    if(fabs(WS.IMUangle.y*R2Df)>15){printf("y direction fall!n\n"); isWalking = false; save_all(2);}
+
+
+    if(WP.Gait==TrotWalk)
+    {
+        //COM trajectory generation
+
+        vec3 RF2LH = QP.pLF-QP.pRF;
+        vec3 LF2RH = QP.pRF-QP.pLF;
+
+        vec3 FrontVt = mat3(qPel_stepstart)*vec3(1,0,0);
+        FrontVt = FrontVt-dot(FrontVt,vec3(0,0,1))*vec3(0,0,1);
+        vec3 FrontVector = FrontVt.normalize();//not really...
+        vec3 LeftVector = cross(vec3(0,0,1),FrontVector).normalize();
+
+
+        Next_ZMP_offset = FrontVector*(WP.step_L.x+ff)/(pow(e,w*WP.step_T)-1)
+                +LeftVector*(WP.step_L.y+ll)/(pow(e,w*WP.step_T)-1);
+        //            Next_ZMP_offset = FrontVector*(WP.step_L.x)/(pow(e,w*WP.step_T)-1)
+        //                              +LeftVector*(WP.step_L.y)/(pow(e,w*WP.step_T)-1);
+
+
+
+
+        if(isFirststep)
+        {
+            ZMP = -Next_ZMP_offset/((pow(e,w*WP.step_T)-1));
+        }
+        else if(isRHLFmove==true)// RH,LF swing
+        {
+            ZMP = (QP.pLH+QP.pRF)*0.5;//later controllable factor
+            RFcontact =  LHcontact = true;
+            LFcontact =  RHcontact = false;
+        }
+        else
+        {
+            ZMP = (QP.pRH+QP.pLF)*0.5;//later controllable factor
+            RFcontact =  LHcontact = false;
+            LFcontact =  RHcontact = true;
+        }
+
+
+        QP_est = state_est();
+
+        //LIPM dynamics
+        delZ = QP.pCOM.z-ZMP.z;
+
+        if(isFirststep)
+        {
+            QP.ddCOM = g*(QP.pCOM-ZMP)/delZ;
+        }
+        else if(FootonAir[0]==false&&FootonAir[1]==false&&FootonAir[2]==false&&FootonAir[3]==false)
+        {
+            QP.ddCOM = g*(QP.pCOM-ZMP)/delZ;
+        }
+        else
+        {
+            vec3 direction;
+            vec3 direction2;
+            if(isRHLFmove)
+            {
+                vec3 nV  = QP.pLH-QP.pRF;
+                vec3 td = cross(nV,vec3(0,0,1));
+                direction = td.normalize();
+                direction2 = nV.normalize();
+            }
+            else
+            {
+                vec3 nV  = QP.pRH-QP.pLF;
+                vec3 td = cross(nV,vec3(0,0,1));
+                direction = td.normalize();
+                direction2 = nV.normalize();
+
+            }
+            vec3 dd = direction*dot(direction,QP_est.pCOM-ZMP);
+            vec3 dd2 = direction2*dot(direction2,QP.pCOM-ZMP);
+            QP.ddCOM = g*(dd+dd2)/delZ;//OK???
+
+            //QP.ddCOM = g*(QP.pCOM-ZMP)/delZ;//nocon
+        }
+
+        ///////////control here
+
+        if(FootonAir[0]==false&&FootonAir[1]==false&&FootonAir[2]==false&&FootonAir[3]==false)
+        {
+            FFz_ref();
+            DSP_control();
+        }
+        else
+        {
+            FFz_ref_ssp();
+            SSP_control();
+        }
+
+        double Kplr;
+        Kplr = 30.0/delZ*Oi.P2HY*Oi.P2HY;//lets increase gain after check ft sensor
+
+        {
+            ct = //FrontVector*(Kpfb*WS.IMUangle.y + Kdfb*WS.IMUomega.y)
+                    -LeftVector*(Kplr*WS.IMUangle.x);
+            vec3 direction;
+            if(isRHLFmove)
+            {
+                vec3 nV  = QP.pLH-QP.pRF;
+                vec3 td = cross(nV,vec3(0,0,1));
+                direction = td.normalize();
+            }
+            else
+            {
+                vec3 nV  = QP.pRH-QP.pLF;
+                vec3 td = cross(nV,vec3(0,0,1));
+                direction = td.normalize();
+
+            }
+            ct = direction*dot(direction,ct);//should be applied
+            ct_ff = g*(QP_est.pCOM-ZMP)/delZ;
+            ct_ff.z = 0;
+            ct_ff = ct_ff-QP.ddCOM;
+
+
+            //               std::cout<<"cont ddcom "<<ct.x<<" "<<ct.y<<" "<<ct.z<<" "<<std::endl;
+            //               std::cout<<"original ddcom "<<QP.ddCOM.x<<" "<<QP.ddCOM.y<<" "<<QP.ddCOM.z<<" "<<std::endl;
+            //               std::cout<<"IMUangle "<<WS.IMUangle.x<<" "<<WS.IMUangle.y<<" "<<WS.IMUangle.z<<" "<<std::endl;
+
+            if(FootonAir[0]==false&&FootonAir[1]==false&&FootonAir[2]==false&&FootonAir[3]==false)
+            {//all contact
+            }
+            else
+            {
+                QP.ddCOM = QP.ddCOM + ct;
+            }
+        }
+        double friccoef = 0.8;
+        double MaxA = friccoef*g;
+        QP.ddCOM.z = 0;
+        if(QP.ddCOM.norm()>MaxA)
+        {
+            //std::cout<<"ddCOM big "<<QP.ddCOM.norm()<<std::endl;
+            QP.ddCOM = QP.ddCOM/QP.ddCOM.norm()*MaxA;//friction cone
+        }
+
+        if(isFinishing)
+        {
+            QP.ddCOM = vec3(0,0,0);//later zmp control
+            QP.dCOM = vec3(0,0,0);//later zmp control
+        }
+
+
+        VectorNd FPR;
+        double st_5,st_4,st_3,st_2,st_1;
+        st_1 = t_now;
+        st_2 = st_1*st_1;
+        st_3 = st_2*st_1;
+        st_4 = st_3*st_1;
+        st_5 = st_4*st_1;
+        FPR = calc_5th((t_now-dt),WP.step_T,oldRotZ,vec3(WP.step_Rot,0,0));
+        double PelRotAngle = FPR[0]*st_5 + FPR[1]*st_4 + FPR[2]*st_3 + FPR[3]*st_2 + FPR[4]*st_1 + FPR[5];
+        oldRotZ[0] = PelRotAngle;
+        oldRotZ[1] = 5*FPR[0]*st_4 + 4*FPR[1]*st_3 + 3*FPR[2]*st_2 + 2*FPR[3]*st_1 + FPR[4];
+        oldRotZ[2] = 20*FPR[0]*st_3 + 12*FPR[1]*st_2 + 6*FPR[2]*st_1 + 2*FPR[3];
+        QP.qPel = quat(mat3(vec3(0,0,-1),PelRotAngle))*qPel_stepstart;//post? pre? not sure
+
+        CP = QP.pCOM + QP.dCOM/w;
+        CP_est = QP_est.pCOM + QP_est.dCOM/w;
+        if(FootonAir[0]==false&&FootonAir[1]==false&&FootonAir[2]==false&&FootonAir[3]==false)
+        {//all contact
+        }
+        else
+        {
+            CP_nn = pow(e,w*(WP.step_T-t_now))*(CP-ZMP)+ZMP;
+            CP_est_nn = pow(e,w*(WP.step_T-t_now))*(CP_est-ZMP)+ZMP;
+            //ddcom = g/zc*(com-zmp)
+            //com-zmp = A1*e^(sqrt(g/zc)*t)+A2*e^(-sqrt(g/zc)*t)//A?B?C?
+            //COM0-ZMP = A1+A2
+            //dCOM0 = wA1-wA2 +C
+            //ddCOM0 = w*w*(A1+A2) = w*w*(COM0-ZMP)
+            //A1+A2 = (COM0-ZMP)
+            //A1-A2 = dCOM0/w;
+
+            vec3 A1 = ((QP.pCOM-ZMP)+QP.dCOM/w)*0.5;
+            vec3 A2 = ((QP.pCOM-ZMP)-QP.dCOM/w)*0.5;
+
+            COM_nn = A1*pow(e,w*(WP.step_T-t_now)) +A2*pow(e,-w*(WP.step_T-t_now)) + ZMP;
+
+            //should compare COM_nn and CP_nn to make foot not go so far
+            //lets limit to 20cm
+
+            double k_footstep = 1.0;//if bigger then 1.0, more aggressive stepping
+            //maybe change to 1.0 after change ddCOM
+            CP_nn = COM_nn + k_footstep*(CP_nn-COM_nn);
+            if(CP_nn.x-COM_nn.x>foot_xlim){CP_nn.x = COM_nn.x + foot_xlim;}
+            if(CP_nn.x-COM_nn.x<-foot_xlim){CP_nn.x = COM_nn.x - foot_xlim;}
+            if(CP_nn.y-COM_nn.y>foot_ylim){CP_nn.y = COM_nn.y + foot_ylim;}
+            if(CP_nn.y-COM_nn.y<-foot_ylim){CP_nn.y = COM_nn.y - foot_ylim;}
+            CP_nn.z = 0;
+            if(fabs(dot((ZMP-CP_nn),FrontVector))>0.2){printf("too much step! Front n\n"); isWalking = false; save_all(2);}
+            if(fabs(dot((ZMP-CP_nn),LeftVector))>0.2){printf("too much step! Left n\n"); isWalking = false; save_all(2);}
+        }
+        QP.pCOM = QP.pCOM + QP.dCOM*dt + QP.ddCOM*dt*dt/2;
+        QP.dCOM = QP.dCOM + QP.ddCOM*dt;
+
+
+        //lets generate....
+        if(isFirststep)
+        {
+
+        }
+        else if(isRHLFmove==true)// RH,LF swing
+        {
+            vec3 LFV = - FrontVector*WP.FB_L/2 + LeftVector*WP.LR_L/2;
+            vec3 RHV =   FrontVector*WP.FB_L/2 - LeftVector*WP.LR_L/2;
+            mat3 RotZ = mat3(vec3(0,0,-1),WP.step_Rot);
+            LFV = RotZ*LFV;
+            RHV = RotZ*RHV;
+
+            FootTogoLF = CP_nn - Next_ZMP_offset + LFV;
+            FootTogoRH = CP_nn - Next_ZMP_offset + RHV;
+
+
+            FootTogoLH = QP.pLH;
+            FootTogoRF = QP.pRF;
+        }
+        else
+        {
+            vec3 RFV = - FrontVector*WP.FB_L/2 - LeftVector*WP.LR_L/2;
+            vec3 LHV =   FrontVector*WP.FB_L/2 + LeftVector*WP.LR_L/2;
+            mat3 RotZ = mat3(vec3(0,0,-1),WP.step_Rot);
+            RFV = RotZ*RFV;
+            LHV = RotZ*LHV;
+
+
+            FootTogoRF = CP_nn - Next_ZMP_offset + RFV;
+            FootTogoLH = CP_nn - Next_ZMP_offset + LHV;
+
+            FootTogoLF = QP.pLF;
+            FootTogoRH = QP.pRH;
+        }
+
+
+        //calculate foot trajectory
+        WS_NOW = time2Wphase(t_now);
+        MOVE_LEGS_TROT();
+
+        if((WS_NOW&BFU||WS_NOW&SWR)&&walkchanged)
+        {
+            WP = WP_next;
+            walkchanged  = false;
+        }
+
+
+
+    }
+
+
+    save_onestep(Qcnt);
+    Qcnt++;
+    t_now+=dt;
+
+    QP_controled = QP;
+    QP_controled.qPel = QP.qPel*con_qPel;
+    QP_controled.pRF.z =QP.pRF.z + FootZctFT[0];
+    QP_controled.pLF.z =QP.pLF.z + FootZctFT[1];
+    QP_controled.pRH.z =QP.pRH.z + FootZctFT[2];
+    QP_controled.pLH.z =QP.pLH.z + FootZctFT[3];
+    return Oi.IK_COM(QP_controled);
+}
+void MOVE_LEGS_TROT()
+{
+    //printf("LF %f RF %f LH %f RH %f\n",WS.LF_Fz, WS.RF_Fz, WS.LH_Fz, WS.RH_Fz);
+    //  printf("LF %d RF %d LH %d RH %d\n",LFlanded, RFlanded, LHlanded, RHlanded);
+    VectorNd Fps, FpszH, FpszF;
+    double t_u = WP.step_T*(1.0-dsp_ratio)*upRatio;
+    double st_5,st_4,st_3,st_2,st_1;
+    st_1 = t_now;
+    st_2 = st_1*st_1;
+    st_3 = st_2*st_1;
+    st_4 = st_3*st_1;
+    st_5 = st_4*st_1;
+    if(WS_NOW==DSP)//now dsp_ratio is zero
+    {
+
+    }
+    else
+    {
+        if(WS_NOW&UPR)
+        {
+            FpszH = calc_5th((t_now-dt),t_u,oldpFzH,vec3(upL,0,0));
+            FpszF = calc_5th((t_now-dt),t_u,oldpFzF,vec3(upL,0,0));
+
+        }
+        else
+        {
+            FpszH = calc_5th((t_now-dt),WP.step_T*(1.0-dsp_ratio),oldpFzH,vec3(landing_depth,0,0));
+            FpszF = calc_5th((t_now-dt),WP.step_T*(1.0-dsp_ratio),oldpFzF,vec3(landing_depth,0,0));
+
+        }
+
+        if(isFirststep||isFinishing)
+        {}
+        else if(isRHLFmove==true)// RH,LF swing
+        {
+            LHlanded = false;
+            RFlanded = false;
+            //if(FootonAir[0]==true){if(WS.RF_Fz>landing_fthres){ FootonAir[0] = false;}}
+            //if(FootonAir[3]==true){if(WS.LH_Fz>landing_fthres){ FootonAir[3] = false;}}
+
+            if(WS_NOW&UPR)
+            {
+                FootonAir[1] = true;
+                FootonAir[2] = true;
+            }
+            if(WS_NOW&AFD)
+            {
+                FootonAir[1] = false;
+                FootonAir[2] = false;
+            }
+
+            //                double midHF = (QP.pLH.z+QP.pRF.z)*0.5;
+            //                double delH = QP.pRF.z-QP.pLH.z;
+            //                midHF = midHF*0.9;
+
+            //                QP.pLH.z = midHF-0.5*delH;
+            //                QP.pRF.z = midHF+0.5*delH;
+
+            //                double tleft = WP.step_T-t_now;
+            //                if(tleft>dt)
+            //                {
+            //                    QP.pLH.z  = (tleft-dt)/(tleft)*QP.pLH.z;
+            //                    QP.pRF.z  = (tleft-dt)/(tleft)*QP.pRF.z;
+            //                }
+            //                else
+            //                {
+            //                    QP.pLH.z  = 0;
+            //                    QP.pRF.z  = 0;
+            //                }
+            QP.pLH.z = 0.95*QP.pLH.z;
+            QP.pRF.z = 0.95*QP.pRF.z;
+
+            if(RHlanded==false)
+            {
+                QP.pRH.z =FpszH[0]*st_5 + FpszH[1]*st_4 + FpszH[2]*st_3 + FpszH[3]*st_2 + FpszH[4]*st_1 + FpszH[5];
+                oldpFzH[0] = QP.pRH.z;
+                oldpFzH[1] = 5*FpszH[0]*st_4 + 4*FpszH[1]*st_3 + 3*FpszH[2]*st_2 + 2*FpszH[3]*st_1 + FpszH[4];
+                oldpFzH[2] = 20*FpszH[0]*st_3 + 12*FpszH[1]*st_2 + 6*FpszH[2]*st_1 + 2*FpszH[3];
+            }
+
+            if(WS_NOW&BFU)
+            {
+                oldpRHx = vec3(QP.pRH.x,0,0);
+                oldpRHy = vec3(QP.pRH.y,0,0);
+            }
+            else if(WS_NOW&SWR)
+            {
+                Fps = calc_5th((t_now-dt),WP.step_T*(1-after_down_ratio)*(1-dsp_ratio),oldpRHx,vec3(FootTogoRH.x,0,0));
+
+                QP.pRH.x =Fps[0]*st_5 + Fps[1]*st_4 + Fps[2]*st_3 + Fps[3]*st_2 + Fps[4]*st_1 + Fps[5];
+                oldpRHx[0] = QP.pRH.x;
+                oldpRHx[1] = 5*Fps[0]*st_4 + 4*Fps[1]*st_3 + 3*Fps[2]*st_2 + 2*Fps[3]*st_1 + Fps[4];
+                oldpRHx[2] = 20*Fps[0]*st_3 + 12*Fps[1]*st_2 + 6*Fps[2]*st_1 + 2*Fps[3];
+
+                Fps = calc_5th((t_now-dt),WP.step_T*(1-after_down_ratio)*(1-dsp_ratio),oldpRHy,vec3(FootTogoRH.y,0,0));
+
+                QP.pRH.y =Fps[0]*st_5 + Fps[1]*st_4 + Fps[2]*st_3 + Fps[3]*st_2 + Fps[4]*st_1 + Fps[5];
+                oldpRHy[0] = QP.pRH.y;
+                oldpRHy[1] = 5*Fps[0]*st_4 + 4*Fps[1]*st_3 + 3*Fps[2]*st_2 + 2*Fps[3]*st_1 + Fps[4];
+                oldpRHy[2] = 20*Fps[0]*st_3 + 12*Fps[1]*st_2 + 6*Fps[2]*st_1 + 2*Fps[3];
+            }
+            else//after down
+            {
+                oldpFzH[0] = QP.pLH.z;
+                oldpFzH[1] = 0;
+                oldpFzH[2] = 0;
+            }
+
+            if(LFlanded==false)
+            {
+                QP.pLF.z =FpszF[0]*st_5 + FpszF[1]*st_4 + FpszF[2]*st_3 + FpszF[3]*st_2 + FpszF[4]*st_1 + FpszF[5];
+                oldpFzF[0] = QP.pLF.z;
+                oldpFzF[1] = 5*FpszF[0]*st_4 + 4*FpszF[1]*st_3 + 3*FpszF[2]*st_2 + 2*FpszF[3]*st_1 + FpszF[4];
+                oldpFzF[2] = 20*FpszF[0]*st_3 + 12*FpszF[1]*st_2 + 6*FpszF[2]*st_1 + 2*FpszF[3];
+            }
+
+            if(WS_NOW&BFU)
+            {
+                oldpLFx = vec3(QP.pLF.x,0,0);
+                oldpLFy = vec3(QP.pLF.y,0,0);
+            }
+            else if(WS_NOW&SWR)
+            {
+                Fps = calc_5th((t_now-dt),WP.step_T*(1-after_down_ratio)*(1-dsp_ratio),oldpLFx,vec3(FootTogoLF.x,0,0));
+
+                QP.pLF.x =Fps[0]*st_5 + Fps[1]*st_4 + Fps[2]*st_3 + Fps[3]*st_2 + Fps[4]*st_1 + Fps[5];
+                oldpLFx[0] = QP.pLF.x;
+                oldpLFx[1] = 5*Fps[0]*st_4 + 4*Fps[1]*st_3 + 3*Fps[2]*st_2 + 2*Fps[3]*st_1 + Fps[4];
+                oldpLFx[2] = 20*Fps[0]*st_3 + 12*Fps[1]*st_2 + 6*Fps[2]*st_1 + 2*Fps[3];
+
+                Fps = calc_5th((t_now-dt),WP.step_T*(1-after_down_ratio)*(1-dsp_ratio),oldpLFy,vec3(FootTogoLF.y,0,0));
+
+                QP.pLF.y =Fps[0]*st_5 + Fps[1]*st_4 + Fps[2]*st_3 + Fps[3]*st_2 + Fps[4]*st_1 + Fps[5];
+                oldpLFy[0] = QP.pLF.y;
+                oldpLFy[1] = 5*Fps[0]*st_4 + 4*Fps[1]*st_3 + 3*Fps[2]*st_2 + 2*Fps[3]*st_1 + Fps[4];
+                oldpLFy[2] = 20*Fps[0]*st_3 + 12*Fps[1]*st_2 + 6*Fps[2]*st_1 + 2*Fps[3];
+
+            }
+            else//after down
+            {
+                oldpFzF[0] = QP.pRF.z;
+                oldpFzF[1] = 0;
+                oldpFzF[2] = 0;
+            }
+            if(t_now>t_u + (WP.step_T*(1.0-dsp_ratio)-t_u)*0.5)
+            {
+                if(WS_NOW&DWR&&LFlanded==false)
+                {
+                    if(WS.LF_Fz>landing_fthres)
+                    {
+                        oldpFzF[1] = 0;oldpFzF[2] = 0;LFlanded = true; FootonAir[1] = false;
+                        printf("LFlanded\n");
+                        st_1 = t_now-trackingDelayTime;//or + 0.005*0.5; so, maybe 0.03 is almost precise
+                        st_2 = st_1*st_1;
+                        st_3 = st_2*st_1;
+                        st_4 = st_3*st_1;
+                        st_5 = st_4*st_1;
+                        QP.pLF.z = FpszF[0]*st_5 + FpszF[1]*st_4 + FpszF[2]*st_3 + FpszF[3]*st_2 + FpszF[4]*st_1 + FpszF[5];
+
+                    }
+                }
+                if(WS_NOW&DWR&&RHlanded==false)
+                {
+                    if(WS.RH_Fz>landing_fthres)
+                    {
+                        oldpFzH[1] = 0;oldpFzH[2] = 0;RHlanded = true; FootonAir[2] = false;
+                        printf("RHlanded\n");
+                        st_1 = t_now-trackingDelayTime;//or + 0.005*0.5; so, maybe 0.03 is almost precise
+                        st_2 = st_1*st_1;
+                        st_3 = st_2*st_1;
+                        st_4 = st_3*st_1;
+                        st_5 = st_4*st_1;
+                        QP.pRH.z = FpszH[0]*st_5 + FpszH[1]*st_4 + FpszH[2]*st_3 + FpszH[3]*st_2 + FpszH[4]*st_1 + FpszH[5];
+                    }
+                }
+            }
+
+
+        }
+        else// LH,RF swing
+        {
+            RHlanded = false;
+            LFlanded = false;
+
+            if(WS_NOW&UPR)
+            {
+                FootonAir[0] = true;
+                FootonAir[3] = true;
+            }
+            if(WS_NOW&AFD)
+            {
+                FootonAir[0] = false;
+                FootonAir[3] = false;
+            }
+
+
+            //                double tleft = WP.step_T-t_now;
+            //                if(tleft>dt)
+            //                {
+            //                    QP.pRH.z  = (tleft-dt)/(tleft)*QP.pRH.z;
+            //                    QP.pLF.z  = (tleft-dt)/(tleft)*QP.pLF.z;
+            //                }
+            //                else
+            //                {
+            //                    QP.pRH.z  = 0;
+            //                    QP.pLF.z  = 0;
+            //                }
+            QP.pRH.z = 0.95*QP.pRH.z;
+            QP.pLF.z = 0.95*QP.pLF.z;
+
+            if(LHlanded==false)
+            {
+                QP.pLH.z =FpszH[0]*st_5 + FpszH[1]*st_4 + FpszH[2]*st_3 + FpszH[3]*st_2 + FpszH[4]*st_1 + FpszH[5];
+                oldpFzH[0] = QP.pLH.z;
+                oldpFzH[1] = 5*FpszH[0]*st_4 + 4*FpszH[1]*st_3 + 3*FpszH[2]*st_2 + 2*FpszH[3]*st_1 + FpszH[4];
+                oldpFzH[2] = 20*FpszH[0]*st_3 + 12*FpszH[1]*st_2 + 6*FpszH[2]*st_1 + 2*FpszH[3];
+            }
+            if(WS_NOW&BFU)
+            {
+                oldpLHx = vec3(QP.pLH.x,0,0);
+                oldpLHy = vec3(QP.pLH.y,0,0);
+            }
+            else if(WS_NOW&SWR)
+            {
+                Fps = calc_5th((t_now-dt),WP.step_T*(1-after_down_ratio)*(1-dsp_ratio),oldpLHx,vec3(FootTogoLH.x,0,0));
+
+                QP.pLH.x =Fps[0]*st_5 + Fps[1]*st_4 + Fps[2]*st_3 + Fps[3]*st_2 + Fps[4]*st_1 + Fps[5];
+                oldpLHx[0] = QP.pLH.x;
+                oldpLHx[1] = 5*Fps[0]*st_4 + 4*Fps[1]*st_3 + 3*Fps[2]*st_2 + 2*Fps[3]*st_1 + Fps[4];
+                oldpLHx[2] = 20*Fps[0]*st_3 + 12*Fps[1]*st_2 + 6*Fps[2]*st_1 + 2*Fps[3];
+
+                Fps = calc_5th((t_now-dt),WP.step_T*(1-after_down_ratio)*(1-dsp_ratio),oldpLHy,vec3(FootTogoLH.y,0,0));
+
+                QP.pLH.y =Fps[0]*st_5 + Fps[1]*st_4 + Fps[2]*st_3 + Fps[3]*st_2 + Fps[4]*st_1 + Fps[5];
+                oldpLHy[0] = QP.pLH.y;
+                oldpLHy[1] = 5*Fps[0]*st_4 + 4*Fps[1]*st_3 + 3*Fps[2]*st_2 + 2*Fps[3]*st_1 + Fps[4];
+                oldpLHy[2] = 20*Fps[0]*st_3 + 12*Fps[1]*st_2 + 6*Fps[2]*st_1 + 2*Fps[3];
+            }
+            else//after down
+            {
+                oldpFzH[0] = QP.pRH.z;
+                oldpFzH[1] = 0;
+                oldpFzH[2] = 0;
+            }
+            if(RFlanded==false)
+            {
+                QP.pRF.z =FpszF[0]*st_5 + FpszF[1]*st_4 + FpszF[2]*st_3 + FpszF[3]*st_2 + FpszF[4]*st_1 + FpszF[5];
+                oldpFzF[0] =QP.pRF.z;
+                oldpFzF[1] = 5*FpszF[0]*st_4 + 4*FpszF[1]*st_3 + 3*FpszF[2]*st_2 + 2*FpszF[3]*st_1 + FpszF[4];
+                oldpFzF[2] = 20*FpszF[0]*st_3 + 12*FpszF[1]*st_2 + 6*FpszF[2]*st_1 + 2*FpszF[3];
+            }
+            if(WS_NOW&BFU)
+            {
+                oldpRFx = vec3(QP.pRF.x,0,0);
+                oldpRFy = vec3(QP.pRF.y,0,0);
+            }
+            else if(WS_NOW&SWR)
+            {
+                Fps = calc_5th((t_now-dt),WP.step_T*(1-after_down_ratio)*(1-dsp_ratio),oldpRFx,vec3(FootTogoRF.x,0,0));
+
+                QP.pRF.x =Fps[0]*st_5 + Fps[1]*st_4 + Fps[2]*st_3 + Fps[3]*st_2 + Fps[4]*st_1 + Fps[5];
+                oldpRFx[0] = QP.pRF.x;
+                oldpRFx[1] = 5*Fps[0]*st_4 + 4*Fps[1]*st_3 + 3*Fps[2]*st_2 + 2*Fps[3]*st_1 + Fps[4];
+                oldpRFx[2] = 20*Fps[0]*st_3 + 12*Fps[1]*st_2 + 6*Fps[2]*st_1 + 2*Fps[3];
+
+                Fps = calc_5th((t_now-dt),WP.step_T*(1-after_down_ratio)*(1-dsp_ratio),oldpRFy,vec3(FootTogoRF.y,0,0));
+
+                QP.pRF.y =Fps[0]*st_5 + Fps[1]*st_4 + Fps[2]*st_3 + Fps[3]*st_2 + Fps[4]*st_1 + Fps[5];
+                oldpRFy[0] = QP.pRF.y;
+                oldpRFy[1] = 5*Fps[0]*st_4 + 4*Fps[1]*st_3 + 3*Fps[2]*st_2 + 2*Fps[3]*st_1 + Fps[4];
+                oldpRFy[2] = 20*Fps[0]*st_3 + 12*Fps[1]*st_2 + 6*Fps[2]*st_1 + 2*Fps[3];
+            }
+            else
+            {
+                oldpFzF[0] = QP.pLF.z;
+                oldpFzF[1] = 0;
+                oldpFzF[2] = 0;
+            }
+
+            if(t_now>t_u + (WP.step_T*(1.0-dsp_ratio)-t_u)*0.3)
+            {
+                if(WS_NOW&DWR&&RFlanded==false)
+                {
+                    if(WS.RF_Fz>landing_fthres)
+                    {
+                        RFlanded = true; oldpFzF[1] = 0; oldpFzF[2] = 0;FootonAir[0] = false;
+                        printf("RFlanded\n");
+                        st_1 = t_now-trackingDelayTime;//or + 0.005*0.5; so, maybe 0.03 is almost precise
+                        st_2 = st_1*st_1;
+                        st_3 = st_2*st_1;
+                        st_4 = st_3*st_1;
+                        st_5 = st_4*st_1;
+                        QP.pRF.z = FpszF[0]*st_5 + FpszF[1]*st_4 + FpszF[2]*st_3 + FpszF[3]*st_2 + FpszF[4]*st_1 + FpszF[5];
+                    }
+                }
+                if(WS_NOW&DWR&&LHlanded==false)
+                {
+                    if(WS.LH_Fz>landing_fthres)
+                    {
+                        LHlanded = true; oldpFzH[1] = 0; oldpFzH[2] = 0;FootonAir[3] = false;
+                        printf("LHlanded\n");
+                        st_1 = t_now-trackingDelayTime;//or + 0.005*0.5; so, maybe 0.03 is almost precise
+                        st_2 = st_1*st_1;
+                        st_3 = st_2*st_1;
+                        st_4 = st_3*st_1;
+                        st_5 = st_4*st_1;
+                        QP.pLH.z = FpszH[0]*st_5 + FpszH[1]*st_4 + FpszH[2]*st_3 + FpszH[3]*st_2 + FpszH[4]*st_1 + FpszH[5];
+                    }
+                }
+            }
+
+
+        }
+    }
+}
+
+
+int time2Wphase(double _tnow)
+{
+    int Wphase;
+    double tref =_tnow+0.5*dt;
+
+    if(tref<(1.0-dsp_ratio)*WP.step_T)
+    {
+        double t_u = WP.step_T*(1.0-dsp_ratio)*upRatio;
+        if(tref<t_u)
+        {
+            Wphase = UPR;
+        }
+        else
+        {
+            Wphase = DWR;
+        }
+        if(tref<WP.step_T*(before_up_ratio)*(1-dsp_ratio)-0.5*dt)
+        {
+            Wphase = Wphase+BFU;
+        }
+        else if(tref<WP.step_T*(1-after_down_ratio)*(1-dsp_ratio)-0.5*dt)
+        {
+            Wphase = Wphase+SWR;
+        }
+        else
+        {
+            Wphase = Wphase+AFD;
+        }
+    }
+    else
+    {
+        Wphase = DSP;
+    }
+
+    return Wphase;
+}
+int WS_NOW;
+const static int SAVEMAX = 400;
+const static int SAVEMAXCNT = 200000;
+double SAVE[SAVEMAX][SAVEMAXCNT];
+void save_onestep(int cnt)
+{
+    if(cnt<SAVEMAXCNT)
+    {
+        SAVE[0][cnt] = QP.pCOM.x;
+        SAVE[1][cnt] = QP.pCOM.y;
+        SAVE[2][cnt] = QP.pCOM.z;
+
+        SAVE[3][cnt] = QP.dCOM.x;
+        SAVE[4][cnt] = QP.dCOM.y;
+        SAVE[5][cnt] = QP.dCOM.z;
+
+        SAVE[6][cnt] = QP.ddCOM.x;
+        SAVE[7][cnt] = QP.ddCOM.y;
+        SAVE[8][cnt] = QP.ddCOM.z;
+
+        SAVE[9][cnt] = QP.pRF.x;
+        SAVE[10][cnt] = QP.pRF.y;
+        SAVE[11][cnt] = QP.pRF.z;
+
+        SAVE[12][cnt] = QP.pLF.x;
+        SAVE[13][cnt] = QP.pLF.y;
+        SAVE[14][cnt] = QP.pLF.z;
+
+        SAVE[15][cnt] = QP.pRH.x;
+        SAVE[16][cnt] = QP.pRH.y;
+        SAVE[17][cnt] = QP.pRH.z;
+
+        SAVE[18][cnt] = QP.pLH.x;
+        SAVE[19][cnt] = QP.pLH.y;
+        SAVE[20][cnt] = QP.pLH.z;
+
+        SAVE[21][cnt] = QP.qPel.x;
+        SAVE[22][cnt] = QP.qPel.y;
+        SAVE[23][cnt] = QP.qPel.z;
+        SAVE[24][cnt] = QP.qPel.w;
+        SAVE[25][cnt] = 0;
+        SAVE[26][cnt] = 0;
+
+        SAVE[27][cnt] = QP_est.pCOM.x;
+        SAVE[28][cnt] = QP_est.pCOM.y;
+        SAVE[29][cnt] = QP_est.pCOM.z;
+
+        SAVE[30][cnt] = WS.IMUangle.x;
+        SAVE[31][cnt] = WS.IMUangle.y;
+        SAVE[32][cnt] = WS.IMUangle.z;
+
+        SAVE[33][cnt] = WS.IMUomega.x;
+        SAVE[34][cnt] = WS.IMUomega.y;
+        SAVE[35][cnt] = WS.IMUomega.z;
+
+        SAVE[36][cnt] = CP.x;
+        SAVE[37][cnt] = CP.y;
+        SAVE[38][cnt] = CP.z;
+
+        SAVE[39][cnt] = CP_nn.x;
+        SAVE[40][cnt] = CP_nn.y;
+        SAVE[41][cnt] = CP_nn.z;
+
+        SAVE[42][cnt] = WS.RF_Fz;
+        SAVE[43][cnt] = WS.LF_Fz;
+        SAVE[44][cnt] = WS.RH_Fz;
+
+        SAVE[45][cnt] = WS.LH_Fz;
+        SAVE[46][cnt] = 0;
+        SAVE[47][cnt] = 0;
+
+        SAVE[48][cnt] = QP_est.dCOM.x;
+        SAVE[49][cnt] = QP_est.dCOM.y;
+        SAVE[50][cnt] = QP_est.dCOM.z;
+
+        SAVE[51][cnt] = COM_nn.x;
+        SAVE[52][cnt] = COM_nn.y;
+        SAVE[53][cnt] = COM_nn.z;
+
+        SAVE[54][cnt] = ZMP.x;
+        SAVE[55][cnt] = ZMP.y;
+        SAVE[56][cnt] = ZMP.z;
+
+        SAVE[57][cnt] = WS.f_RF_Fz;
+        SAVE[58][cnt] = WS.f_LF_Fz;
+        SAVE[59][cnt] = WS.f_RH_Fz;
+
+        SAVE[60][cnt] = WS.f_LH_Fz;
+        SAVE[61][cnt] = WS_NOW;
+        SAVE[62][cnt] = 0;
+
+        SAVE[63][cnt] = FootZctFT[0];
+        SAVE[64][cnt] = FootZctFT[1];
+        SAVE[65][cnt] = FootZctFT[2];
+
+        SAVE[66][cnt] = FootZctFT[3];
+        SAVE[67][cnt] = FC_FB;
+        SAVE[68][cnt] = FC_LR;
+
+        SAVE[69][cnt] = RFz_ref;
+        SAVE[70][cnt] = LFz_ref;
+        SAVE[71][cnt] = RHz_ref;
+
+        SAVE[72][cnt] = LHz_ref;
+        SAVE[73][cnt] = 0;
+        SAVE[74][cnt] = 0;
+
+        SAVE[75][cnt] = FootStep_ERR_I.x;
+        SAVE[76][cnt] = FootStep_ERR_I.y;
+        SAVE[77][cnt] = FootStep_ERR_I.z;
+
+
+        SAVE[78][cnt] = QP.qRF[0];
+        SAVE[79][cnt] = QP.qRF[1];
+        SAVE[80][cnt] = QP.qRF[2];
+
+
+        SAVE[81][cnt] = QP.qRF[3];
+        SAVE[82][cnt] = 0;
+        SAVE[83][cnt] = 0;
+
+        SAVE[84][cnt] = WS.F_RF.x;
+        SAVE[85][cnt] = WS.F_RF.y;
+        SAVE[86][cnt] = WS.F_RF.z;
+
+        SAVE[87][cnt] = ct.x;
+        SAVE[88][cnt] = ct.y;
+        SAVE[89][cnt] = ct.z;
+
+        SAVE[90][cnt] = ct_ff.x;
+        SAVE[91][cnt] = ct_ff.y;
+        SAVE[92][cnt] = ct_ff.z;
+
+        SAVE[93][cnt] = dFootZ[0];
+        SAVE[94][cnt] = dFootZ[1];
+        SAVE[95][cnt] = dFootZ[2];
+
+        SAVE[96][cnt] = dFootZ[3];
+        SAVE[97][cnt] = 0;
+        SAVE[98][cnt] = 0;
+
+        SAVE[99][cnt] = ddFootZ[0];
+        SAVE[100][cnt] = ddFootZ[1];
+        SAVE[101][cnt] = ddFootZ[2];
+
+        SAVE[102][cnt] = ddFootZ[3];
+        SAVE[103][cnt] = 0;
+        SAVE[104][cnt] = 0;
+
+        SAVE[105][cnt] = RFz_con;
+        SAVE[106][cnt] = LFz_con;
+        SAVE[107][cnt] = RHz_con;
+
+        SAVE[108][cnt] = LHz_ref;
+        SAVE[109][cnt] = 0;
+        SAVE[110][cnt] = 0;
+
+        SAVE[111][cnt] = RFz_des;
+        SAVE[112][cnt] = LFz_des;
+        SAVE[113][cnt] = RHz_des;
+
+        SAVE[114][cnt] = LHz_des;
+        SAVE[115][cnt] = 0;
+        SAVE[116][cnt] = t_now;
+
+        SAVE[117][cnt] = CP_est.x;
+        SAVE[118][cnt] = CP_est.y;
+        SAVE[119][cnt] = CP_est.z;
+
+
+        SAVE[120][cnt] = CP_est_nn.x;
+        SAVE[121][cnt] = CP_est_nn.y;
+        SAVE[122][cnt] = CP_est_nn.z;
+
+
+        //from 140
+
+        for(int i=0;i<18;i++)
+        {
+            //140+19+19
+            SAVE[i+140][cnt] = dQref[i];
+        }
+        for(int i=0;i<18;i++)
+        {
+            //140+19+19+18
+            SAVE[i+160][cnt] = ddQref[i];
+        }
+
+        SAVE[180][cnt] = QJ_CRef.RHR;//Current reference
+        SAVE[181][cnt] = QJ_CRef.RHP;
+        SAVE[182][cnt] = QJ_CRef.RKN;
+        SAVE[183][cnt] = QJ_CRef.LHR;
+        SAVE[184][cnt] = QJ_CRef.LHP;
+        SAVE[185][cnt] = QJ_CRef.LKN;
+
+        SAVE[186][cnt] = QJ_CRef.RSR;
+        SAVE[187][cnt] = QJ_CRef.RSP;
+        SAVE[188][cnt] = QJ_CRef.REB;
+        SAVE[189][cnt] = QJ_CRef.LSR;
+        SAVE[190][cnt] = QJ_CRef.LSP;
+        SAVE[191][cnt] = QJ_CRef.LEB;
+
+
+        //from 200
+        SAVE[200][cnt] = WS.JointPos.RHR;//one step delayed reference
+        SAVE[201][cnt] = WS.JointPos.RHP;
+        SAVE[202][cnt] = WS.JointPos.RKN;
+        SAVE[203][cnt] = WS.JointPos.LHR;
+        SAVE[204][cnt] = WS.JointPos.LHP;
+        SAVE[205][cnt] = WS.JointPos.LKN;
+
+        SAVE[206][cnt] = WS.JointPos.RSR;
+        SAVE[207][cnt] = WS.JointPos.RSP;
+        SAVE[208][cnt] = WS.JointPos.REB;
+        SAVE[209][cnt] = WS.JointPos.LSR;
+        SAVE[210][cnt] = WS.JointPos.LSP;
+        SAVE[211][cnt] = WS.JointPos.LEB;
+        //from 220
+        SAVE[220][cnt] = WS.JointPosEnc.RHR;
+        SAVE[221][cnt] = WS.JointPosEnc.RHP;
+        SAVE[222][cnt] = WS.JointPosEnc.RKN;
+        SAVE[223][cnt] = WS.JointPosEnc.LHR;
+        SAVE[224][cnt] = WS.JointPosEnc.LHP;
+        SAVE[225][cnt] = WS.JointPosEnc.LKN;
+
+        SAVE[226][cnt] = WS.JointPosEnc.RSR;
+        SAVE[227][cnt] = WS.JointPosEnc.RSP;
+        SAVE[228][cnt] = WS.JointPosEnc.REB;
+        SAVE[229][cnt] = WS.JointPosEnc.LSR;
+        SAVE[230][cnt] = WS.JointPosEnc.LSP;
+        SAVE[231][cnt] = WS.JointPosEnc.LEB;
+
+        //from 240
+        SAVE[240][cnt] = WS.JointVel.RHR;
+        SAVE[241][cnt] = WS.JointVel.RHP;
+        SAVE[242][cnt] = WS.JointVel.RKN;
+        SAVE[243][cnt] = WS.JointVel.LHR;
+        SAVE[244][cnt] = WS.JointVel.LHP;
+        SAVE[245][cnt] = WS.JointVel.LKN;
+        SAVE[246][cnt] = WS.JointVel.RSR;
+        SAVE[247][cnt] = WS.JointVel.RSP;
+        SAVE[248][cnt] = WS.JointVel.REB;
+        SAVE[249][cnt] = WS.JointVel.LSR;
+        SAVE[250][cnt] = WS.JointVel.LSP;
+        SAVE[251][cnt] = WS.JointVel.LEB;
+
+        //from 260
+        SAVE[260][cnt] = WS.JointCurrent.RHR;
+        SAVE[261][cnt] = WS.JointCurrent.RHP;
+        SAVE[262][cnt] = WS.JointCurrent.RKN;
+        SAVE[263][cnt] = WS.JointCurrent.LHR;
+        SAVE[264][cnt] = WS.JointCurrent.LHP;
+        SAVE[265][cnt] = WS.JointCurrent.LKN;
+        SAVE[266][cnt] = WS.JointCurrent.RSR;
+        SAVE[267][cnt] = WS.JointCurrent.RSP;
+        SAVE[268][cnt] = WS.JointCurrent.REB;
+        SAVE[269][cnt] = WS.JointCurrent.LSR;
+        SAVE[270][cnt] = WS.JointCurrent.LSP;
+        SAVE[271][cnt] = WS.JointCurrent.LEB;
+
+        //from 280
+        SAVE[280][cnt] = QJ_CFF.RHR;
+        SAVE[281][cnt] = QJ_CFF.RHP;
+        SAVE[282][cnt] = QJ_CFF.RKN;
+        SAVE[283][cnt] = QJ_CFF.LHR;
+        SAVE[284][cnt] = QJ_CFF.LHP;
+        SAVE[285][cnt] = QJ_CFF.LKN;
+        SAVE[286][cnt] = QJ_CFF.RSR;
+        SAVE[287][cnt] = QJ_CFF.RSP;
+        SAVE[288][cnt] = QJ_CFF.REB;
+        SAVE[289][cnt] = QJ_CFF.LSR;
+        SAVE[290][cnt] = QJ_CFF.LSP;
+        SAVE[291][cnt] = QJ_CFF.LEB;
+
+        //from 300
+        SAVE[300][cnt] = WS.JointPWM.RHR;
+        SAVE[301][cnt] = WS.JointPWM.RHP;
+        SAVE[302][cnt] = WS.JointPWM.RKN;
+        SAVE[303][cnt] = WS.JointPWM.LHR;
+        SAVE[304][cnt] = WS.JointPWM.LHP;
+        SAVE[305][cnt] = WS.JointPWM.LKN;
+        SAVE[306][cnt] = WS.JointPWM.RSR;
+        SAVE[307][cnt] = WS.JointPWM.RSP;
+        SAVE[308][cnt] = WS.JointPWM.REB;
+        SAVE[309][cnt] = WS.JointPWM.LSR;
+        SAVE[310][cnt] = WS.JointPWM.LSP;
+        SAVE[311][cnt] = WS.JointPWM.LEB;
+
+        //from 320
+        SAVE[320][cnt] = ms[RHR];
+        SAVE[321][cnt] = ms[RHP];
+        SAVE[322][cnt] = ms[RKN];
+        SAVE[323][cnt] = ms[LHR];
+        SAVE[324][cnt] = ms[LHP];
+        SAVE[325][cnt] = ms[LKN];
+        SAVE[326][cnt] = ms[RSR];
+        SAVE[327][cnt] = ms[RSP];
+        SAVE[328][cnt] = ms[REB];
+        SAVE[329][cnt] = ms[LSR];
+        SAVE[330][cnt] = ms[LSP];
+        SAVE[331][cnt] = ms[LEB];
+
+        //from 340
+        SAVE[340][cnt] = dms[RHR];
+        SAVE[341][cnt] = dms[RHP];
+        SAVE[342][cnt] = dms[RKN];
+        SAVE[343][cnt] = dms[LHR];
+        SAVE[344][cnt] = dms[LHP];
+        SAVE[345][cnt] = dms[LKN];
+        SAVE[346][cnt] = dms[RSR];
+        SAVE[347][cnt] = dms[RSP];
+        SAVE[348][cnt] = dms[REB];
+        SAVE[349][cnt] = dms[LSR];
+        SAVE[350][cnt] = dms[LSP];
+        SAVE[351][cnt] = dms[LEB];
+
+
+        //from 360
+        SAVE[360][cnt] = mrefs[RHR];
+        SAVE[361][cnt] = mrefs[RHP];
+        SAVE[362][cnt] = mrefs[RKN];
+        SAVE[363][cnt] = mrefs[LHR];
+        SAVE[364][cnt] = mrefs[LHP];
+        SAVE[365][cnt] = mrefs[LKN];
+        SAVE[366][cnt] = mrefs[RSR];
+        SAVE[367][cnt] = mrefs[RSP];
+        SAVE[368][cnt] = mrefs[REB];
+        SAVE[369][cnt] = mrefs[LSR];
+        SAVE[370][cnt] = mrefs[LSP];
+        SAVE[371][cnt] = mrefs[LEB];
+
+        //from 380
+        SAVE[380][cnt] = dmrefs[RHR];
+        SAVE[381][cnt] = dmrefs[RHP];
+        SAVE[382][cnt] = dmrefs[RKN];
+        SAVE[383][cnt] = dmrefs[LHR];
+        SAVE[384][cnt] = dmrefs[LHP];
+        SAVE[385][cnt] = dmrefs[LKN];
+        SAVE[386][cnt] = dmrefs[RSR];
+        SAVE[387][cnt] = dmrefs[RSP];
+        SAVE[388][cnt] = dmrefs[REB];
+        SAVE[389][cnt] = dmrefs[LSR];
+        SAVE[390][cnt] = dmrefs[LSP];
+        SAVE[391][cnt] = dmrefs[LEB];
+
+
+    }
+}
+inline double stept2off(double stept, double _w, double stepw)//is it right?
+{
+    return stepw/(2+pow(e,_w*stept));
+}
+void save_all(int fnum = 0)
+{
+    printf("walk finished %d type: %d\n",Qcnt,fnum);
+    FILE* ffp = NULL;
+    if(fnum==0)
+    {ffp= fopen("OW_Quad.txt","w");}
+    else if(fnum==1)
+    {ffp= fopen("OW_Quad_controltest.txt","w");}
+    else if(fnum==2)
+    {ffp= fopen("OW_Quad_falling.txt","w");}
+    for(int i=0;i<Qcnt;i++)
+    {
+        for(int j=0;j<SAVEMAX;j++)
+        {
+            fprintf(ffp,"%f\t",SAVE[j][i]);
+        }
+        fprintf(ffp,"\n");
+    }
+
+    fclose(ffp);
+    printf("save done\n");
+}
+VectorNd calc_5th(double t_0, double t_e,vec3 h_0,vec3 h_e)
+{
+    if(t_e-t_0<0.05){t_e = t_0+0.05;}
+    MatrixNd AAA(6,6);
+    AAA(0,0) = pow(t_0,5);
+    AAA(0,1) = pow(t_0,4);
+    AAA(0,2) = pow(t_0,3);
+    AAA(0,3) = pow(t_0,2);
+    AAA(0,4) = pow(t_0,1);
+    AAA(0,5) = 1;
+
+    AAA(1,0) = 5*pow(t_0,4);
+    AAA(1,1) = 4*pow(t_0,3);
+    AAA(1,2) = 3*pow(t_0,2);
+    AAA(1,3) = 2*pow(t_0,1);
+    AAA(1,4) = 1;
+    AAA(1,5) = 0;
+
+    AAA(2,0) = 20*pow(t_0,3);
+    AAA(2,1) = 12*pow(t_0,2);
+    AAA(2,2) = 6*pow(t_0,1);
+    AAA(2,3) = 2*1;
+    AAA(2,4) = 0;
+    AAA(2,5) = 0;
+
+    AAA(3,0) = pow(t_e,5);
+    AAA(3,1) = pow(t_e,4);
+    AAA(3,2) = pow(t_e,3);
+    AAA(3,3) = pow(t_e,2);
+    AAA(3,4) = pow(t_e,1);
+    AAA(3,5) = 1;
+
+    AAA(4,0) = 5*pow(t_e,4);
+    AAA(4,1) = 4*pow(t_e,3);
+    AAA(4,2) = 3*pow(t_e,2);
+    AAA(4,3) = 2*pow(t_e,1);
+    AAA(4,4) = 1;
+    AAA(4,5) = 0;
+
+    AAA(5,0) = 20*pow(t_e,3);
+    AAA(5,1) = 12*pow(t_e,2);
+    AAA(5,2) = 6*pow(t_e,1);
+    AAA(5,3) = 2*1;
+    AAA(5,4) = 0;
+    AAA(5,5) = 0;
+
+    VectorNd BBB(6);
+    BBB[0] = h_0[0];//position
+    BBB[1] = h_0[1];//velocity
+    BBB[2] = h_0[2];//acc
+    BBB[3] = h_e[0];//position
+    BBB[4] = h_e[1];//velocity
+    BBB[5] = h_e[2];//acc
+
+    return (AAA.inverse())*BBB;
+}
+
+};
+
+#endif // OW_QUAD
+

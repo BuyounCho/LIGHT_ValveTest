@@ -1,0 +1,77 @@
+QWidget *removedTab[3];
+
+void EfficiencyDialog::on_CBB_DriveMode_currentTextChanged(const QString &arg1)
+{
+    switch(ui->CBB_DriveMode->currentIndex()){
+    case FOC_POSITION_CONTROL:
+    {
+        if(ui->TW_DriveMotorMotion->count()==3){
+            ui->TW_DriveMotorMotion->insertTab(0,removedTab[0],"Position");
+        }else if(ui->TW_DriveMotorMotion->count()==2){
+            ui->TW_DriveMotorMotion->insertTab(0,removedTab[0],"Position");
+            ui->TW_DriveMotorMotion->insertTab(1,removedTab[1],"Velocity");
+        }else if(ui->TW_DriveMotorMotion->count()==1){
+            ui->TW_DriveMotorMotion->insertTab(0,removedTab[0],"Position");
+            ui->TW_DriveMotorMotion->insertTab(1,removedTab[1],"Velocity");
+            ui->TW_DriveMotorMotion->insertTab(2,removedTab[2],"Current");
+        }
+        ui->TW_DriveMotorMotion->setCurrentIndex(0);
+        break;
+    }
+    case FOC_VELOCITY_CONTROL:
+    {
+        if(ui->TW_DriveMotorMotion->count()==4){
+            removedTab[0] = ui->TW_DriveMotorMotion->widget(0);
+            ui->TW_DriveMotorMotion->removeTab(0);
+        }else if(ui->TW_DriveMotorMotion->count()==2){
+            ui->TW_DriveMotorMotion->insertTab(0,removedTab[1],"Velocity");
+        }else if(ui->TW_DriveMotorMotion->count()==1){
+            ui->TW_DriveMotorMotion->insertTab(0,removedTab[1],"Velocity");
+            ui->TW_DriveMotorMotion->insertTab(1,removedTab[2],"Current");
+        }
+        ui->TW_DriveMotorMotion->setCurrentIndex(0);
+        break;
+    }
+    case FOC_CURRENT_CONTROL:
+    {
+        if(ui->TW_DriveMotorMotion->count()==4){
+            removedTab[0] = ui->TW_DriveMotorMotion->widget(0);
+            removedTab[1] = ui->TW_DriveMotorMotion->widget(1);
+            ui->TW_DriveMotorMotion->removeTab(0);
+            ui->TW_DriveMotorMotion->removeTab(0);
+        }else if(ui->TW_DriveMotorMotion->count()==3){
+            removedTab[1] = ui->TW_DriveMotorMotion->widget(0);
+            ui->TW_DriveMotorMotion->removeTab(0);
+        }else if(ui->TW_DriveMotorMotion->count()==1){
+            ui->TW_DriveMotorMotion->insertTab(0,removedTab[2],"Current");
+        }
+        ui->TW_DriveMotorMotion->setCurrentIndex(0);
+        break;
+    }
+    case FOC_PWM_CONTROL:
+    {
+        if(ui->TW_DriveMotorMotion->count()==4){
+            removedTab[0] = ui->TW_DriveMotorMotion->widget(0);
+            removedTab[1] = ui->TW_DriveMotorMotion->widget(1);
+            removedTab[2] = ui->TW_DriveMotorMotion->widget(2);
+            ui->TW_DriveMotorMotion->removeTab(0);
+            ui->TW_DriveMotorMotion->removeTab(0);
+            ui->TW_DriveMotorMotion->removeTab(0);
+        }else if(ui->TW_DriveMotorMotion->count()==3){
+            removedTab[1] = ui->TW_DriveMotorMotion->widget(0);
+            removedTab[2] = ui->TW_DriveMotorMotion->widget(1);
+            ui->TW_DriveMotorMotion->removeTab(0);
+            ui->TW_DriveMotorMotion->removeTab(0);
+        }else if(ui->TW_DriveMotorMotion->count()==2){
+            removedTab[2] = ui->TW_DriveMotorMotion->widget(0);
+            ui->TW_DriveMotorMotion->removeTab(0);
+        }
+        ui->TW_DriveMotorMotion->setCurrentIndex(0);
+        break;
+    }
+    default:
+        break;
+    }
+//    QMessageBox::information(this,"Title",QString::number(ui->TW_DriveMotorMotion->count()));
+
+}

@@ -1,0 +1,36 @@
+## no .a files
+#ex) *.a
+
+## but do track lib.a, even though you're ignoring .a files above
+#ex) !lib.a
+
+## only ignore the TODO file in the current directory, not subdir/TODO
+#ex) /TODO
+
+## ignore all files in the build/ directory
+#ex) build/
+
+## ignore doc/notes.txt, but not doc/server/arch.txt
+#ex) doc/*.txt
+
+## ignore all .pdf files in the doc/ directory
+#ex) doc/**/*.pdf
+
+build/__DaemonBuild/*
+build/ALBuild/*
+build/PODOGUIBuild/*
+!build/**/*.gitkeep
+exe/Daemon
+exe/PODOGUI
+exe/PODOLauncher
+exe/DataLog/LIGHT_AL_Data/*.txt
+exe/DataLog/LIGHT_AL_Data2/*.txt
+exe/DataLog/LIGHTCoMSysID/*.txt
+exe/DataLog/LIGHT_FullScenarioTask_Data/*.txt
+exe/DataLog/PumpControl_AL_Data/*.txt
+exe/DataLog/QuadEffTest_Data/*.txt
+exe/DataLog/SH_AL_Data/*.txt
+exe/DataLog/ValveID_Data/*.txt
+share/GUI/stl
+share/OW_*
+*.pdf

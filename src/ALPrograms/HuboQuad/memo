@@ -1,0 +1,336 @@
+            if(WP.Gait==Wave)
+            {
+
+                int stepcnt =(WP.step_T+0.005*0.5)/0.005;
+                int upcnt = stepcnt/2;//stepT = 0.3;
+                int Nstep = 100;
+                FootContact upFC,dwFC;
+                upFC.cnt = 1;
+                upFC.upcnt = 1;
+                upFC.isStance = false;
+                upFC.up_L = 0.05;
+                dwFC.cnt = 1;
+                dwFC.isStance = true;//test_wave->75%. lets try less then 75% walking
+
+                OQ.GWP.CRF.push_back(dwFC);
+                OQ.GWP.CLF.push_back(dwFC);
+                OQ.GWP.CRH.push_back(dwFC);
+                OQ.GWP.CLH.push_back(dwFC);
+                //ready and auto fill
+                //read text to automatically fill
+
+                OQ.GWP.StanceRate = 0.6;//0.6 before
+                OQ.GWP.Periodcnt = stepcnt/(1-OQ.GWP.StanceRate);//for wave gait
+                double phase_off[4] = {0.0,0.5,0.75-0.1,0.25-0.1};
+                //double phase_off[4] = {0.0,0.5,0.75,0.25};
+                for(int i=0;i<4;i++){OQ.GWP.phase_off[i] = phase_off[i]+OQ.GWP.StanceRate*0.5;}
+                bool firstStance[] = {true,true,true,true};
+                OQ.GWP.upratio = 0.5;
+                OQ.GWP.WPs.push_back(WP);//just once
+                OQ.GWP.WP_cnts.push_back(stepcnt*Nstep);//just once
+
+                double StanceRate = OQ.GWP.StanceRate;
+                double upratio = OQ.GWP.upratio;
+                int Periodcnt = OQ.GWP.Periodcnt;
+                for(int i=0;i<4;i++){ phase_off[i] = OQ.GWP.phase_off[i];}
+                for(int i=0;i<Nstep*stepcnt;i++)
+                {
+                    if(fmod((phase_off[0]*Periodcnt +i)/Periodcnt,1.0)<StanceRate)
+                    {
+                        firstStance[0] = false;
+                        if(OQ.GWP.CRF.back().isStance)
+                        {
+                               OQ.GWP.CRF.back().cnt++;
+                        }
+                        else
+                        {
+                            OQ.GWP.CRF.push_back(dwFC);
+                        }
+                    }
+                    else
+                    {
+                        if(OQ.GWP.CRF.back().isStance)
+                        {
+                            if(firstStance[0]){OQ.GWP.CRF.back().cnt++;}
+                            else{OQ.GWP.CRF.push_back(upFC);}
+                        }
+                        else
+                        {
+                            OQ.GWP.CRF.back().cnt++;
+                            OQ.GWP.CRF.back().upcnt = OQ.GWP.CRF.back().cnt*upratio;
+                        }
+                    }
+
+                    if(fmod((phase_off[1]*Periodcnt +i)/Periodcnt,1.0)<StanceRate)
+                    {
+                        firstStance[1] = false;
+                        if(OQ.GWP.CLF.back().isStance)
+                        {
+                               OQ.GWP.CLF.back().cnt++;
+                        }
+                        else
+                        {
+                            OQ.GWP.CLF.push_back(dwFC);
+                        }
+                    }
+                    else
+                    {
+                        if(OQ.GWP.CLF.back().isStance)
+                        {
+                            if(firstStance[1]){OQ.GWP.CLF.back().cnt++;}
+                            else{OQ.GWP.CLF.push_back(upFC);}
+                        }
+                        else
+                        {
+                            OQ.GWP.CLF.back().cnt++;
+                            OQ.GWP.CLF.back().upcnt = OQ.GWP.CLF.back().cnt*upratio;
+                        }
+                    }
+
+                    if(fmod((phase_off[2]*Periodcnt +i)/Periodcnt,1.0)<StanceRate)
+                    {
+                        firstStance[2] = false;
+                        if(OQ.GWP.CRH.back().isStance)
+                        {
+                               OQ.GWP.CRH.back().cnt++;
+                        }
+                        else
+                        {
+                            OQ.GWP.CRH.push_back(dwFC);
+                        }
+                    }
+                    else
+                    {
+                        if(OQ.GWP.CRH.back().isStance)
+                        {
+                            if(firstStance[2]){OQ.GWP.CRH.back().cnt++;}
+                            else{OQ.GWP.CRH.push_back(upFC);}
+                        }
+                        else
+                        {
+                            OQ.GWP.CRH.back().cnt++;
+                            OQ.GWP.CRH.back().upcnt = OQ.GWP.CRH.back().cnt*upratio;
+                        }
+                    }
+
+                    if(fmod((phase_off[3]*Periodcnt +i)/Periodcnt,1.0)<StanceRate)
+                    {
+                        firstStance[3] = false;
+                        if(OQ.GWP.CLH.back().isStance)
+                        {
+                               OQ.GWP.CLH.back().cnt++;
+                        }
+                        else
+                        {
+                            OQ.GWP.CLH.push_back(dwFC);
+                        }
+                    }
+                    else
+                    {
+                        if(OQ.GWP.CLH.back().isStance)
+                        {
+                            if(firstStance[3]){OQ.GWP.CLH.back().cnt++;}
+                            else{OQ.GWP.CLH.push_back(upFC);}
+                        }
+                        else
+                        {
+                            OQ.GWP.CLH.back().cnt++;
+                            OQ.GWP.CLH.back().upcnt = OQ.GWP.CLH.back().cnt*upratio;
+                        }
+                    }
+
+                }
+            }
+            //        for(int k=0;k<NL;k++)
+            //        {
+            //            double toff = k*dt_pv;
+            //            double n_dt = toff/dt;
+            //            int n1 = (int)(n_dt);
+            //            int n2 = n1+1;
+            //            double r1 = (n_dt-n1)/1.0;
+            //            double r2 = (n2-n_dt)/1.0;
+            //            vec3 tZMPr = r2*zmp_refs[n1]+r1*zmp_refs[n2];//linear interpolation
+            //            sumgp=sumgp+Kdi[k]*tZMPr;//k? k+1?
+            //        }
+            //        if(pvcnt%5==0)
+            //        {
+            //            for(int k=0;k<NL;k=k+2)
+            //            {
+            //                int n1 = k/2*5;
+            //                vec3 tZMPr = zmp_refs[n1];//linear interpolation
+            //                sumgp=sumgp+Kdi[k]*tZMPr*2;//k? k+1?
+            //            }
+            //            if(pvcnt==0)//feedforward->change in next ssp
+            //            {
+            //                //printf("FFchanged!\n");
+            //                //should modefy pvddx to change ref
+            //                sumKse = -(Kx[0]*COMr + Kx[1]*dCOMr) -sumgp+zmp_refs[0];
+            //                //init u to be zmp_refs
+
+            //            }
+            //            vec3 u = sumKse + (Kx[0]*COMr + Kx[1]*dCOMr) +sumgp;
+
+            //            ddCOMr.x = u.x;
+            //            ddCOMr.y = u.y;
+            //        }
+
+//        if(ffchange)
+//        {
+//            d4DF.ffchange = true;
+//            RTIME starttime = rt_timer_read();
+//            ZMP_OFF = vec3(0,0,0);
+//            oZMP_OFF = ZMP_OFF;
+//            int i=0;
+//            vec3 err;
+//            if(isfirststep)
+//            {
+//                for(i=0;i<50;i++)//20 iter
+//                {
+//                    for(int kkk=0;kkk<50;kkk++)//20 iter
+//                    {
+//                        err = Calc_ZMP_OFF();
+//                        if(err.norm()<0.001)
+//                        {
+//                            break;
+//                        }
+//                    }
+//                    if(fabs(ZMP_OFF.y-(step_W/2))<0.001)//less then 1mm
+//                    {
+//                        if(step_T[0]<0.2){step_T[0] = 0.2;}
+//                        break;
+//                    }
+//                    double err2 = ZMP_OFF.y-(step_W/2);
+
+//                    step_T[0] += +0.4*err2;
+//                    changeNextstep[0] = false;
+//                    changeNextstep[1] = false;
+//                }
+//                for(int i=0;i<nstepinNL;i++)
+//                {
+//                    steps[i] = t_steps[i];
+//                }
+//            }
+//            else
+//            {
+//                err = Calc_ZMP_OFF();
+//                for(i=0;i<50;i++)//20 iter
+//                {
+//                    err = Calc_ZMP_OFF();
+
+//                    if(err.norm()<0.001)
+//                    {
+//                        break;
+//                    }
+//                }
+//                //here limit step_Ls
+//                if(pre_stopflag&&step_L[0].norm()<1e-3)
+//                {
+//                    stopflag = true;
+//                    pre_stopflag = false;
+//                }
+//                if(step_L[0].x>0.5) step_L[0].x = 0.5;
+//                if(step_L[0].x<-0.5) step_L[0].x = -0.5;
+//                if(step_L[0].y>0.2) step_L[0].y = 0.2;
+//                if(step_L[0].y<-0.2) step_L[0].y = -0.2;
+//                for(int i=0;i<nstepinNL;i++)
+//                {
+//                    steps[i] = t_steps[i];
+//                }
+//            }
+//            RTIME endtime = rt_timer_read();
+//            printf("%d ZMP_OFF %f %f %f \n",i,ZMP_OFF.x,ZMP_OFF.y,ZMP_OFF.z);
+//            printf("%d step_L[0] %f %f %f \n",i,step_L[0].x,step_L[0].y,step_L[0].z);
+//            printf("%d step_L[1] %f %f %f \n",i,step_L[1].x,step_L[1].y,step_L[1].z);
+//            printf("step_T[0] %f step_T[1] %f\n",step_T[0],step_T[1]);
+//            printf("%d err %f %f %f \n",i,err.x,err.y,err.z);
+//            printf("calctime : %f ms\n",(endtime-starttime)*0.001*0.001);
+//            ffchange = false;
+
+//        }
+        //update futere zmp refs using step_L, step_T,
+        //ssp_dsp_ratio
+
+
+//            COMt = COMt + dCOMt*dt + dt*dt/2*ddCOMr;
+//            dCOMt = dCOMt + dt*ddCOMr;
+
+//            sumKse = sumKse+Ke*(zmp_refs[0]-ZMP)/dt_pv*dt;
+
+//            for(int k=0;k<NL2ms;k++)
+//            {
+//                sumgp=sumgp+Kdi2ms[k]*zmp_refs[k];//k? k+1?
+//            }
+
+//            u = sumKse + (Kx[0]*COMr + Kx[1]*dCOMt) +sumgp;
+
+//            ddCOMr.x = u.x;
+//            ddCOMr.y = u.y;
+
+//            ZMP = COMt -zc/g*ddCOMr;
+
+//            int offnum = (0.2+0.5*dt)/dt;
+//            double k = 0.03;
+//            bool ok = false;
+//            if(1e-5<fabs(ZMP.x-zmp_refs[1].x))
+//            {
+//                for(int i=0;i<offnum;i++)
+//                {
+//                    zmp_refs[i].x+=k*(ZMP.x-zmp_refs[1].x);
+//                }
+//            }
+//            else
+//            {
+//                ok = true;
+//            }
+//            if(1e-5<fabs(ZMP.y-zmp_refs[1].y))
+//            {
+//                for(int i=0;i<offnum;i++)
+//                {
+//                    zmp_refs[i].y+=k*(ZMP.y-zmp_refs[1].y);
+//                }
+//            }
+//            else
+//            {
+//                if(ok) break;
+//            }
+  //          cout<<"it "<<it<<"zmperr "<<ZMP.x-zmp_refs[0].x<<endl;
+  //    QJ.pPel = vec3();
+  //    QJ.qPel = quat();
+  //    QJ.RHR = 0*D2Rf;
+  //    QJ.RHP = 45*D2Rf;
+  //    QJ.RKN = -90*D2Rf;
+
+  //    QJ.LHR = 0*D2Rf;
+  //    QJ.LHP = 45*D2Rf;
+  //    QJ.LKN = -90*D2Rf;
+
+  //    QJ.RSR = 0*D2Rf;
+  //    QJ.RSP = 45*D2Rf;
+  //    QJ.REB = -90*D2Rf;
+
+  //    QJ.LSR = 0*D2Rf;
+  //    QJ.LSP = 45*D2Rf;
+  //    QJ.LEB = -90*D2Rf;
+  //    WalkParams WP;
+  //    cout<<"ttst"<<endl;
+  //    test_OQ.init_Quad(QJ,WP);
+  //    test_OQ.test_function();
+  //    cout<<"ttet"<<endl;
+
+  //    vec3 IMUangle = D2Rf*vec3(sharedSEN->IMU[0].Roll,sharedSEN->IMU[0].Pitch,sharedSEN->IMU[0].Yaw);
+  //    quat IMUquat = quat(sharedSEN->IMU[0].Q[0]
+  //            ,sharedSEN->IMU[0].Q[1]
+  //            ,sharedSEN->IMU[0].Q[2]
+  //            ,sharedSEN->IMU[0].Q[3]);
+  //    cout<<"IMUquat "<<IMUquat[0]<<" "<<IMUquat[1]<<" "
+  //       <<IMUquat[2]<<" "<<IMUquat[3]<<endl;
+  //    mat3 IMUrotx = mat3(vec3(-1,0,0),IMUangle.x);
+  //    mat3 IMUroty = mat3(vec3(0,-1,0),IMUangle.y);
+  //    mat3 IMUrotz = mat3(vec3(0,0,-1),IMUangle.z);
+  //    quat IMUquat2 = quat(IMUrotz*IMUroty*IMUrotx);
+  //    cout<<"IMUquat2 "<<IMUquat2[0]<<" "<<IMUquat2[1]<<" "
+  //       <<IMUquat2[2]<<" "<<IMUquat2[3]<<endl;
+
+
+  //    OW_PVDDX OOPPP;
+  //    OOPPP.pv_test();

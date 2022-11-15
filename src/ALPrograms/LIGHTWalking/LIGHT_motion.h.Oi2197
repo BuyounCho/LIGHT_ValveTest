@@ -1,0 +1,427 @@
+#ifndef LIGHT_MOTION_H
+#define LIGHT_MOTION_H
+
+#include "LIGHT_commands.h"
+#include "LIGHT_var_and_func.h"
+#include "LIGHT_robotmodel.h"
+#include "LIGHT_dynamics.h"
+#include "LIGHT_kinematics.h"
+
+#include "ManualCAN.h"
+
+class LIGHTWholeMotions
+{
+
+public:
+    double _t; // operation time
+    double _tlimit; // operation time
+    bool   FlagTimeUpdate;
+
+public:
+    bool StanceFoot;
+    enum Foot_ID {
+        RIGHTFOOT = -1,
+        DOUBLEFOOT = 0,
+        LEFTFOOT = 1,
+    };
+
+    enum _PREVIEW_STEPS {
+        PREVIEW_STEPS = 4
+    };
+
+    struct StepData {
+        double t_STEP;              // Step Time
+        Vector3d X_STEP;            // Step Foot Desitination Position on ground (ZMP Destination)
+        Vector3d X_STEP_adj;        // Additional Step Foot Adjustment for push recovery
+        Matrix3d R_STEP;            // Step Foot Desitination Orientation
+        char NextSupportPhase;      // SUPPORTCONTROL_RDSP = 1
+                                    // SUPPORTCONTROL_LDSP = 2
+                                    // SUPPORTCONTROL_RSSP = 3
+                                    // SUPPORTCONTROL_LSSP = 4
+        bool StepChange;            // Will reference frame change at 'next' step?
+        bool FinalStep;             // Is this step a final step?
+        double WeightDistribution;  // Can be Activated at DSP, (0.0[StanceFoot] ~ 1.0[StepFoot])
+        bool Occupied;              // Is this Buffer occupied?
+    } SDB[PREVIEW_STEPS]; // StepDateButter, Maximum Number of Preview Steps : 4
+    Vector3d X_STEP_forStepOver;
+
+    int GetFinalStep() {
+        for(int i=0;i<PREVIEW_STEPS;i++)
+        {
+            if(SDB[i].FinalStep == true) { return i; }
+        }
+        return -1;
+    }
+
+
+public :
+    void StepDataBuffer_InitializeWalking(Vector3d _Initial_Stance,
+                                          double _StepTime = 0.8, double _StepLength = 0.0, double _SwayLength = 0.180);
+
+    void StepDataBuffer_Clear(int _N = 0);
+    bool StepDataBuffer_Update();
+    void StepDataBuffer_AddOneStep(double _StepTime, double _StepLength, double _SwayLength);
+
+    bool Generate_CPref(Vector3d _CPnow,
+                        int _N_Prev, double _dT_Prev,
+                        Vector3d *_CPref_horizon, Vector3d *_ZMPref_horizon, Vector3d &_CPnext, Vector3d &_ZMPnext);
+
+    LIGHT_QP QP_xCoMRef4Walking;
+    LIGHT_QP QP_yCoMRef4Walking;
+    double wn_X_pattern;
+    double zeta_X_pattern;
+    double wn_Y_pattern;
+    double zeta_Y_pattern;
+    int N_horizon;
+    double dT_horizon;
+
+    bool GenerateWalkingPattern_Formulation(Vector3d Xnow_CoM, Vector3d dXnow_CoM,
+                                            Vector3d u_CoM, Vector3d u_dCoM, Vector3d u_ddCoM);
+    bool GenerateWalkingPattern_Update(Vector3d Xnow_CoM, Vector3d dXnow_CoM,
+                                       Vector3d u_CoM, Vector3d u_dCoM, Vector3d u_ddCoM,
+                                       Vector3d* _CPref, Vector3d* _ZMPref);
+    bool GenerateWalkingPattern_Solve(Vector3d Xnow_CoM, Vector3d dXnow_CoM,
+                                      Vector3d &Xref_CP,
+                                      Vector3d &u_CoM, Vector3d &u_dCoM, Vector3d &u_ddCoM,
+                                      Vector3d &Xnext_CoM, Vector3d &dXnext_CoM, Vector3d &ddXnext_CoM);
+
+    Vector3d FootStepAdjustment(Vector3d Xdes_CP, Vector3d Xnow_CP, char SwingFoot);
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+public:
+    class Walking_AutomaticFootStepPlacement_Weiber_2010 {
+    private:
+        LIGHTWholeMotions& OutClassAccess;
+    private:
+        double v_walk;
+        double t_step;
+        double t_DSP;
+        double h_CoM;
+
+        double t_init; // initializing time
+        double t_term; // terminating time
+
+        VectorNd CurrentState_X; // = [Xp; Xv; Xa]
+        VectorNd CurrentState_Y; // = [Yp; Yv; Ya]
+        double t_dur; // duration time for this step
+        double t_rem; // remaining time for this step
+
+    private: // for MPC
+        int N_window;  // number of window
+        double dt_window; // dt of window
+        int k_step;  // number of preview steps
+
+        MatrixNd Pps; // Xp = Pps*(CurrentState)+Ppu*Ux
+        MatrixNd Ppu;
+        MatrixNd Pvs; // Xv = Pvs*(CurrentState)+Pvu*Ux
+        MatrixNd Pvu;
+        MatrixNd Pzs; // Zx = Pzs*(CurrentState)+Pzu*Ux
+        MatrixNd Pzu;
+        MatrixNd Pzr; // Zxref = Pzr*Fx
+
+    public:
+        Walking_AutomaticFootStepPlacement_Weiber_2010(LIGHTWholeMotions& OutClass) : OutClassAccess(OutClass)
+        {
+            v_walk = 0.0;
+            t_step = 0.8;
+            t_DSP = 0.1;
+            h_CoM = 0.80;
+
+            CurrentState_X = MatrixNd::Zero(3,1);
+            CurrentState_Y = MatrixNd::Zero(3,1);
+
+            if(t_step < 0.5) t_step = 0.5;
+            t_dur = 0.0;
+            t_rem = t_step;
+
+            t_init = 5.0;
+            t_term = 5.0;
+
+            N_window = 15;
+            dt_window = 0.1;
+            k_step = 3;
+
+            Pps = MatrixNd::Zero(N_window,3);
+            Ppu = MatrixNd::Zero(N_window,N_window);
+            Pvs = MatrixNd::Zero(N_window,3);
+            Pvu = MatrixNd::Zero(N_window,N_window);
+            Pzs = MatrixNd::Zero(N_window,3);
+            Pzu = MatrixNd::Zero(N_window,N_window);
+            SetMPCparameter(N_window, dt_window);
+
+            Pzr = MatrixNd::Zero(N_window,3);
+        };
+
+        bool GetStanceFoot() {return OutClassAccess.StanceFoot;}
+        double Get_t_init() {return t_init;}
+        double Get_t_term() {return t_term;}
+
+        void SetWalkingParameter(double v, double t_s, double t_d, double h) {v_walk = v; t_step = t_s; t_DSP = t_d; h_CoM = h;}
+        void SetMPCparameter(int N, double dt);
+        void UpdateMPCparameter();
+
+        void Run_InitializeMPC();
+        void Run_TerminateMPC();
+        void Run_WalkingMPC();
+
+    };
+
+    class Walking_PreviewControl_Kajita_2003 {
+    private:
+        LIGHTWholeMotions& OutClassAccess;
+
+    public:
+        Walking_PreviewControl_Kajita_2003(LIGHTWholeMotions& OutClass) : OutClassAccess(OutClass)
+        {
+
+        };
+    };
+
+public:
+    //    Walking_AutomaticFootStepPlacement_Weiber_2010 Walking_MPC;
+    //    Walking_AutomaticFootStepPlacement_Weiber_2010 Walking_PVC;
+
+    /////////////////////////////////////////////////////////////////////////////////////////////
+
+    //    LIGHTWholeMotions() : Walking_MPC(*this), Walking_PVC(*this) {
+    //        _t = 0.0;
+    //        _tlimit = 10000.0;
+    //        StanceFoot = RIGHTFOOT;
+    //    }
+
+    LIGHTWholeMotions() {
+        _t = 0.0;
+        _tlimit = 100000.0;
+        FlagTimeUpdate = true;
+        StanceFoot = RIGHTFOOT;
+    }
+
+    void TimeReset(void) { _t = 0.0; FlagTimeUpdate = true; }
+    void TimeUpdate(void) { if(FlagTimeUpdate){_t = _t+SYS_DT;}}
+    double TimeNow(void) {return _t;}
+    void   TimeShow(void) { std::cout << "t : " << _t << std::endl; }
+    double TimeLimit(void) {return _tlimit;}
+    double TimeLeft(void) {return (_tlimit - _t);}
+    void TimeLimitSet(double limit_time) {_tlimit = limit_time;}
+    bool TimeCheck(void) {
+        if(_t>_tlimit) {
+            FlagTimeUpdate = false;
+            return true;
+        } else {return false;}
+    }
+    bool TimeIsZero(void) {
+        if(_t == 0.0) {return true;}
+        else{return false;}
+    }
+    bool Flag_OperationInit = false;
+
+    void ClearDesiredMotions();
+
+    ///////////////////////////////////////////////////////////////
+    ///  [Sub Motions]
+    /// 1. Pelvis2RF Orientation
+    /// 2. Pelvis2RF Position
+    /// 3. Pelvis2LF Orientation
+    /// 4. Pelvis2LF Position
+    ///
+    /// 5. RF2Pelvis Orientation
+    /// 6. RF2CoM    Position
+    /// 7. RF2LF     Orientation
+    /// 8. RF2LF     Position
+    ///
+    /// 9. LF2Pelvis Orientation
+    /// 10. LF2CoM   Position
+    /// 11. LF2RF    Orientation
+    /// 12. LF2RF    Position
+    ///
+    /// 13. RightLeg Joint
+    /// 14. LeftLeg  Joint
+    /// 15. Waist    Joint
+    ///////////////////////////////////////////////////////////////
+    void Orientation_Linear_Trajectory(double Tmove, Matrix3d Rini, Matrix3d Rdes, Matrix3d &Rnext);
+    void Position_5th_Trajectory(double Tmove, Vector3d Xini, Vector3d dXini, Vector3d ddXini, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes, Vector3d &Xnext, Vector3d &dXnext, Vector3d &ddXnext);
+    void Position_3rd_Trajectory(double Tmove, Vector3d Xini, Vector3d dXini, Vector3d Xdes, Vector3d dXdes, Vector3d &Xnext, Vector3d &dXnext);
+    void Joint_5th_Trajectory(double Tmove, double th_ini, double dth_ini, double ddth_ini, double th_des, double dth_des, double ddth_des, double &th_next, double &dth_next, double &ddth_next);
+    void Joint_3rd_Trajectory(double Tmove, double th_ini, double dth_ini, double th_des, double dth_des, double &th_next, double &dth_next);
+
+    void Submotion_Global2Pel_Ori(double TIME, Matrix3d Rdes);
+
+    void Submotion_Global2RF_Ori(double TIME, Matrix3d Rdes);
+    void Submotion_Global2LF_Ori(double TIME, Matrix3d Rdes);
+    void Submotion_Global2RF_Pos(double TIME, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes);
+    void Submotion_Global2LF_Pos(double TIME, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes);
+
+    void Submotion_Pelvis2RF_Ori(double TIME, Matrix3d Rdes);
+    void Submotion_Pelvis2LF_Ori(double TIME, Matrix3d Rdes);
+    void Submotion_Pelvis2RF_Pos(double TIME, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes);
+    void Submotion_Pelvis2LF_Pos(double TIME, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes);
+
+    void Submotion_RF2CoM_Pos(double TIME, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes);
+    void Submotion_RF2LF_Pos(double TIME, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes);
+
+    void Submotion_LF2CoM_Pos(double TIME, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes);
+    void Submotion_LF2RF_Pos(double TIME, Vector3d Xdes, Vector3d dXdes, Vector3d ddXdes);
+
+    void Submotion_LF2RFSwing_forWalking(double t_Swing, Vector3d _Xdes_LF2RF, double z_SwingUp);
+    void Submotion_RF2LFSwing_forWalking(double t_Swing, Vector3d _Xdes_RF2LF, double z_SwingUp);
+    void Submotion_LF2RFSwingUp(double t_Swing, Vector3d _Xdes_RF2LF);
+    void Submotion_LF2RFSwingDown(double t_Swing, Vector3d _Xdes_RF2LF);
+    void Submotion_RF2LFSwingUp(double t_Swing, Vector3d _Xdes_RF2LF);
+    void Submotion_RF2LFSwingDown(double t_Swing, Vector3d _Xdes_RF2LF);
+
+    void Submotion_RightLeg_Q(double TIME, VectorNd Qdes, VectorNd dQdes, VectorNd ddQdes);
+    void Submotion_LeftLeg_Q(double TIME, VectorNd Qdes, VectorNd dQdes, VectorNd ddQdes);
+    void Submotion_Waist_Q(double TIME, VectorNd Qdes, VectorNd dQdes, VectorNd ddQdes);
+
+    ///////////////////////////////////////////////////////////////
+    ///  Basic Operation Set
+
+    bool JointSpaceMove_ALL(double _TIME, MatrixNd _Qdes);
+    bool WorkSpaceMove_ALL(double _TIME, Matrix3d _Rdes_RF, Vector3d _Xdes_RF, Matrix3d _Rdes_LF, Vector3d _Xdes_LF);
+    bool CoM_Move_RDSP(double _TIME,
+                       Matrix3d _Rdes_Global2Pel,
+                       Matrix3d _Rdes_Global2RF, Matrix3d _Rdes_Global2LF,
+                       Vector3d _Xdes_RF2CoM, Vector3d _dXdes_RF2CoM, Vector3d _ddXdes_RF2CoM);
+    bool CoM_Move_LDSP(double _TIME,
+                       Matrix3d _Rdes_Global2Pel,
+                       Matrix3d _Rdes_Global2RF, Matrix3d _Rdes_Global2LF,
+                       Vector3d _Xdes_LF2CoM, Vector3d _dXdes_LF2CoM, Vector3d _ddXdes_LF2CoM);
+    bool CoM_Move_RSSP(double _TIME,
+                       Matrix3d _Rdes_Global2Pel,
+                       Matrix3d _Rdes_Global2RF, Matrix3d _Rdes_Global2LF,
+                       Vector3d _Xdes_RF2CoM, Vector3d _dXdes_RF2CoM, Vector3d _ddXdes_RF2CoM,
+                       Vector3d _Xdes_RF2LF, Vector3d _dXdes_RF2LF, Vector3d _ddXdes_RF2LF);
+    bool CoM_Move_LSSP(double _TIME,
+                       Matrix3d _Rdes_Global2Pel,
+                       Matrix3d _Rdes_Global2RF, Matrix3d _Rdes_Global2LF,
+                       Vector3d _Xdes_LF2CoM, Vector3d _dXdes_LF2CoM, Vector3d _ddXdes_LF2CoM,
+                       Vector3d _Xdes_LF2RF, Vector3d _dXdes_LF2RF, Vector3d _ddXdes_LF2RF);
+
+    enum SUPPORTPHASE_TRANSITION_SET {
+        SUPPORTPHASE_TRANSITION_NOACT = 0,
+        SUPPORTPHASE_TRANSITION_RDSP_RSSP,
+        SUPPORTPHASE_TRANSITION_RSSP_RDSP,
+        SUPPORTPHASE_TRANSITION_RDSP_LDSP,
+        SUPPORTPHASE_TRANSITION_LDSP_RDSP,
+        SUPPORTPHASE_TRANSITION_LDSP_LSSP,
+        SUPPORTPHASE_TRANSITION_LSSP_LDSP,
+    };
+    int SupportPhase_Transition(int _TR_MODE);
+
+    ////////////////////////////////////////////////////////////////////////////////////////
+    /// Support Control Set
+
+    enum SUPPORTCONTROL_MODESET {
+        SUPPORTCONTROL_NOACT = 0,
+        SUPPORTCONTROL_RDSP,
+        SUPPORTCONTROL_LDSP,
+        SUPPORTCONTROL_RSSP,
+        SUPPORTCONTROL_LSSP,
+        SUPPORTCONTROL_FLOATING,
+        SUPPORTCONTROL_DIRECTTORQUE,
+    };
+
+    double WeightCompensation;
+    double MomentCompensation;
+    Vector3d Freq_body_pos, Zeta_body_pos;
+    Vector3d Freq_body_ori, Zeta_body_ori;
+    Vector3d Freq_foot_pos, Zeta_foot_pos;
+    Vector3d Freq_foot_ori, Zeta_foot_ori;
+    void SetSupportControlGain_DSP(double _WeightCompensation = 0.800,
+                                   double _MomentCompensation = 0.000,
+                                   Vector3d _Freq_body_pos = Vector3d::Ones()*0.55, Vector3d _Zeta_body_pos = Vector3d::Ones()*0.55,
+                                   Vector3d _Freq_body_ori = Vector3d::Ones()*1.00, Vector3d _Zeta_body_ori = Vector3d::Ones()*0.55);
+    void SetSupportControlGain_SSP(double _WeightCompensation = 0.850,
+                                   double _MomentCompensation = 0.000,
+                                   Vector3d _Freq_body_pos = Vector3d::Ones()*0.45, Vector3d _Zeta_body_pos = Vector3d::Ones()*0.40,
+                                   Vector3d _Freq_body_ori = Vector3d::Ones()*0.80, Vector3d _Zeta_body_ori = Vector3d::Ones()*0.55,
+                                   Vector3d _Freq_foot_pos = Vector3d::Ones()*0.60, Vector3d _Zeta_foot_pos = Vector3d::Ones()*0.50,
+                                   Vector3d _Freq_foot_ori = Vector3d::Ones()*0.20, Vector3d _Zeta_foot_ori = Vector3d::Ones()*0.50);
+    void SetSupportControlGain_Float(Vector3d _Freq_foot_pos = Vector3d::Ones()*1.20, Vector3d _Zeta_foot_pos = Vector3d::Ones()*1.00,
+                                     Vector3d _Freq_foot_ori = Vector3d::Ones()*1.80, Vector3d _Zeta_foot_ori = Vector3d::Ones()*1.00);
+
+    bool SupportControl_DSP_byWBD(char _RefFrame);
+    bool SupportControl_SSP_RF_byWBD();
+    bool SupportControl_SSP_LF_byWBD();
+    bool SupportControl_Float_byWBD();
+
+    bool SupportControl_DirectTorque();
+    bool SupportControl_Noact();
+
+    //////////////////////////////////////////////////////////////////////////////////////
+    /// Deflected Pelvis Compensation + Swing Foot Compensation
+
+    // Deflection Compensation
+    enum DEFLECTION_COMP_MODESET {
+        DEFLECTION_COMP_NOACT = 0,
+        DEFLECTION_COMP_RSP,
+        DEFLECTION_COMP_LSP
+    };
+    int DeflectionComp_CurMode = DEFLECTION_COMP_NOACT;
+    void SetDeflectionCompMode(int DeflectionComp_SetMode = DEFLECTION_COMP_NOACT) {
+        DeflectionComp_CurMode = DeflectionComp_SetMode;
+    }
+    int CheckDeflectionCompMode(void) {
+        return DeflectionComp_CurMode;
+    }
+
+    bool DeflectionComp_RF();
+    bool DeflectionComp_LF();
+
+    // Swing Foot Compensation
+    enum SWINGFOOT_COMP_MODESET {
+        SWINGFOOT_COMP_NOACT = 0,
+        SWINGFOOT_COMP_RSP,
+        SWINGFOOT_COMP_LSP,
+        SWINGFOOT_COMP_FLOATING
+    };
+    int SwingFootComp_CurMode = DEFLECTION_COMP_NOACT;
+    void SetSwingFootCompMode(int SwingFootComp_SetMode = DEFLECTION_COMP_NOACT) {
+        SwingFootComp_CurMode = SwingFootComp_SetMode;
+    }
+    int CheckSwingFootCompMode(void) {
+        return SwingFootComp_CurMode;
+    }
+    bool SwingFootComp_Float();
+    bool SwingFootComp_RF();
+    bool SwingFootComp_LF();
+
+    // Swing Foot Compensation
+    bool Flag_CoMHeightCtrl = true;
+    bool Flag_CoMSwayCtrl = true;
+    double CoMHeightControl(double Damping, double Spring, double Integral);
+    double CoMSwayControl(double Damping, double Spring, double Integral);
+
+    //////////////////////////////////////////////////////////////////////////////////////
+    /// System Identification
+
+    bool SYSID_CoMRef2CoM(int SYSID_TYPE, double CoM_Mag, int f_max, double r_freq);
+
+    //////////////////////////////////////////////////////////////////////////////////////
+    ///
+
+    bool CoM_Move_RDSP_smooth(double _TIME, double _Yoffset, bool _CtrlOn);
+    bool CoM_Move_LDSP_smooth(double _TIME, double _Yoffset, bool _CtrlOn);
+
+    bool RFSwingUp_Dynamic(double _TIME);
+    bool RFSwingDown_Dynamic(double _TIME, Vector3d _Xdes_LF2RF);
+    bool LFSwingUp_Dynamic(double _TIME);
+    bool LFSwingDown_Dynamic(double _TIME, Vector3d _Xdes_RF2LF);
+
+    bool AirWalking(double _PERIOD, double _MAG, int _NUM);
+
+    bool StaticWalking(double _STEP_LENGTH, double _STEP_TIME, int _STEP_NUM);
+
+    bool TestJumping(unsigned int ONOFF, double X_offset, double Z_offset, double Gravity_Gain,
+                     double Kp_pos_JUMP, double Kd_pos_JUMP, double Kp_ori_JUMP, double Kd_ori_JUMP,
+                     double Kp_pos_LAND, double Kd_pos_LAND, double Kp_ori_LAND, double Kd_ori_LAND);
+    bool Squat_DSP(double _HEIGHT, double _TIME, double _NUM);
+    bool Squat_SSP(double _HEIGHT, double _TIME, double _NUM);
+
+//    bool Walking_OnlySSP(double _StepTime, double _StepLength, double _SwayLength, int _StepNumber, bool OnOff_ContactDetect);
+    bool Walking_WithDSP(double _InitTime, double _StepTime, double _DSPTime,
+                         double _StepLength, double _SwayLength, int _StepNumber, bool _CtrlOn);
+
+};
+
+#endif // LIGHT_MOTION_H

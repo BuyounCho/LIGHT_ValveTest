@@ -1,0 +1,249 @@
+#include "ow_quad.h"
+void OW_Quad::COM_ZERO()
+{
+    QP.pPel.z -=QP.pRF.z;
+    QP.pCOM.z -=QP.pRF.z;
+    QP.pLF.z -=QP.pRF.z;
+    QP.pRH.z -=QP.pRF.z;
+    QP.pLH.z -=QP.pRF.z;
+    QP.pRF.z = 0;
+
+    QP.pPel.x -=QP.pCOM.x;
+    QP.pPel.y -=QP.pCOM.y;
+    QP.pRF.x -=QP.pCOM.x;
+    QP.pRF.y -=QP.pCOM.y;
+    QP.pLF.x -=QP.pCOM.x;
+    QP.pLF.y -=QP.pCOM.y;
+    QP.pRH.x -=QP.pCOM.x;
+    QP.pRH.y -=QP.pCOM.y;
+    QP.pLH.x -=QP.pCOM.x;
+    QP.pLH.y -=QP.pCOM.y;
+    QP.pCOM.x = 0;
+    QP.pCOM.y = 0;
+}
+QuadPos OW_Quad::state_est_real(QuadPos QP_before)
+{
+    QuadPos QP_ss;
+
+    if(RFcontact)
+    {
+        if(firstCon2){QP_ss.pRF.z = 0;firstCon2 = false;}
+        QP_ss = Oi.FK_RF(WS.JointPosEnc,QP_before.pRF);
+        WS.JointPosEnc.pPel = QP_ss.pPel;
+
+        last_pCOM = QP_ss.pCOM;
+        cnt_fly = 0;
+    }
+    else if(LFcontact)
+    {
+        if(firstCon2){QP_ss.pLF.z = 0;firstCon2 = false;}
+        QP_ss = Oi.FK_LF(WS.JointPosEnc,QP_before.pLF);
+        WS.JointPosEnc.pPel = QP_ss.pPel;
+
+        last_pCOM = QP_ss.pCOM;
+        cnt_fly = 0;
+    }
+    else if(RHcontact)
+    {
+        if(firstCon2){QP_ss.pRH.z = 0;firstCon2 = false;}
+        QP_ss = Oi.FK_RH(WS.JointPos,QP_before.pRH);
+        //QP_ss = Oi.FK_RH(WS.JointPos,QP_ss.pRH);
+        WS.JointPosEnc.pPel = QP_ss.pPel;
+
+        last_pCOM = QP_ss.pCOM;
+        cnt_fly = 0;
+    }
+    else if(LHcontact)
+    {
+        if(firstCon2){QP_ss.pLH.z = 0;firstCon2 = false;}
+        QP_ss = Oi.FK_LH(WS.JointPos,QP_before.pLH);
+        //QP_ss = Oi.FK_LH(WS.JointPos,QP_ss.pLH);
+        WS.JointPosEnc.pPel = QP_ss.pPel;
+
+        last_pCOM = QP_ss.pCOM;
+        cnt_fly = 0;
+    }
+    else
+    {
+        cnt_fly++;
+        QP_ss = Oi.FK(WS.JointPosEnc);
+
+        vec3 temp_mod = last_pCOM + last_dCOM*(cnt_fly*dt) + 0.5*vec3(0,0,-9.81)*(cnt_fly*dt)*(cnt_fly*dt) - QP_ss.pCOM;
+        dpCOM = last_dCOM + vec3(0,0,-9.81)*(cnt_fly*dt);
+        QP_ss.pCOM = QP_ss.pCOM + temp_mod;
+        QP_ss.pPel = QP_ss.pPel + temp_mod;
+        QP_ss.pRF = QP_ss.pRF + temp_mod;
+        QP_ss.pLF = QP_ss.pLF + temp_mod;
+        QP_ss.pRH = QP_ss.pRH + temp_mod;
+        QP_ss.pLH = QP_ss.pLH + temp_mod;
+
+        WS.JointPosEnc.pPel = QP_ss.pPel;
+        firstCon2 = true;
+    }
+
+}
+QuadPos OW_Quad::state_est2()
+{
+    QuadPos QP_ss;
+    if(isnan(WS.JointPos.pPel.x)||isnan(WS.JointPos.pPel.y)||isnan(WS.JointPos.pPel.z))
+    {
+        WS.JointPos.pPel = vec3();
+    }
+    if(isnan(WS.JointPos.qPel[0])||isnan(WS.JointPos.qPel[1])||isnan(WS.JointPos.qPel[2])||isnan(WS.JointPos.qPel[3]))
+    {
+        WS.JointPos.qPel = quat();
+    }
+    if(RFcontact)
+    {
+        if(firstCon){QP_ss.pRF.z = 0;firstCon = false;}
+        QP_ss = Oi.FK_RF(WS.JointPos,QP.pRF);
+        //QP_ss = Oi.FK_RF(WS.JointPos,QP_ss.pRF);
+        WS.JointPos.pPel = QP_ss.pPel;
+
+        last_pCOM = QP_ss.pCOM;
+        cnt_fly = 0;
+    }
+    else if(LFcontact)
+    {
+        if(firstCon){QP_ss.pLF.z = 0;firstCon = false;}
+        QP_ss = Oi.FK_LF(WS.JointPos,QP.pLF);
+        //QP_ss = Oi.FK_LF(WS.JointPos,QP_ss.pLF);
+        WS.JointPos.pPel = QP_ss.pPel;
+
+        last_pCOM = QP_ss.pCOM;
+        cnt_fly = 0;
+    }
+    else if(RHcontact)
+    {
+        if(firstCon){QP_ss.pRH.z = 0;firstCon = false;}
+        QP_ss = Oi.FK_RH(WS.JointPos,QP.pRH);
+        //QP_ss = Oi.FK_RH(WS.JointPos,QP_ss.pRH);
+        WS.JointPos.pPel = QP_ss.pPel;
+
+        last_pCOM = QP_ss.pCOM;
+        cnt_fly = 0;
+    }
+    else if(LHcontact)
+    {
+        if(firstCon){QP_ss.pLH.z = 0;firstCon = false;}
+        QP_ss = Oi.FK_LH(WS.JointPos,QP.pLH);
+        //QP_ss = Oi.FK_LH(WS.JointPos,QP_ss.pLH);
+        WS.JointPos.pPel = QP_ss.pPel;
+
+        last_pCOM = QP_ss.pCOM;
+        cnt_fly = 0;
+    }
+    else
+    {
+        cnt_fly++;
+        QP_ss = Oi.FK(WS.JointPos);
+
+        vec3 temp_mod = last_pCOM + last_dCOM*(cnt_fly*dt) + 0.5*vec3(0,0,-9.81)*(cnt_fly*dt)*(cnt_fly*dt) - QP_ss.pCOM;
+        dpCOM = last_dCOM + vec3(0,0,-9.81)*(cnt_fly*dt);
+        QP_ss.pCOM = QP_ss.pCOM + temp_mod;
+        QP_ss.pPel = QP_ss.pPel + temp_mod;
+        QP_ss.pRF = QP_ss.pRF + temp_mod;
+        QP_ss.pLF = QP_ss.pLF + temp_mod;
+        QP_ss.pRH = QP_ss.pRH + temp_mod;
+        QP_ss.pLH = QP_ss.pLH + temp_mod;
+
+        WS.JointPos.pPel = QP_ss.pPel;
+        firstCon = true;
+    }
+
+
+    // WS.JointVel.dpPel = (WS.JointPos.pPel-oldpPel)/dt;
+
+
+
+    //should be global, not local
+    //t2 = mat3(WS.IMUquat)*WS.IMULocalW;//why.....
+
+
+    WS.JointVel.dqPel =WS.IMUomega;//local, but should be global?????? ask kangkyu
+
+    Qnow = OD.Joints2Q(WS.JointPos);
+    dQnow = OD.Joints2dQ(WS.JointVel);
+
+    //Calculation dpPel
+    //copythis------------------------------------
+    if(Qcnt ==0) oldpPel = WS.JointPos.pPel;
+    vec3 dpPelNumeric = (WS.JointPos.pPel-oldpPel)/dt;
+    oldpPel = WS.JointPos.pPel;
+    VectorNd Qtemp = Qnow;
+    VectorNd dQrdot = dQnow;
+    vec3 Fomega;
+    Vector3d LFVel;
+    vec3 drdt;
+
+    Qtemp[0] = 0.0; Qtemp[1] = 0.0; Qtemp[2] = 0.0; Qtemp[3] = 0.0; Qtemp[4] = 0.0; Qtemp[5] = 0.0; Qtemp[18] =1.0;
+    dQrdot[0] = 0.0; dQrdot[1] = 0.0; dQrdot[2] = 0.0; dQrdot[3] = 0.0; dQrdot[4] = 0.0; dQrdot[5] = 0.0;
+
+    OD.CalcEndeffectorJacobian3D(Qtemp);//local frame jacobian
+
+
+    mat3 IMUrotx = mat3(vec3(-1,0,0),WS.IMUangle.x);
+    mat3 IMUroty = mat3(vec3(0,-1,0),WS.IMUangle.y);
+    mat3 IMUrotz = mat3(QP.qPel);
+    mat3 IMUrot = IMUrotz*IMUroty*IMUrotx;//z-y-x
+
+    vec3 IMUomega2 = mat3(IMUrot)*WS.IMUomega;//inverse???/
+    WS.JointPos.qPel = quat(IMUrot);
+    if(RFcontact)
+    {
+        Fomega = cross(IMUomega2,(QP_ss.pPel-QP_ss.pRF));
+        LFVel =  -(OD.JacobianRF3D * dQrdot);
+
+        vec3 EGHA = vec3(LFVel[0],LFVel[1],LFVel[2]);
+        EGHA = WS.JointPos.qPel*EGHA;
+        drdt = Fomega + EGHA;
+        WS.JointVel.dpPel = drdt;//if want to use Calculation velocity
+    }
+    else if(LFcontact)
+    {
+        Fomega = cross(IMUomega2,(QP_ss.pPel-QP_ss.pLF));
+        LFVel =  -(OD.JacobianLF3D * dQrdot);
+
+        vec3 EGHA = vec3(LFVel[0],LFVel[1],LFVel[2]);
+        EGHA = WS.JointPos.qPel*EGHA;
+        drdt = Fomega + EGHA;
+        WS.JointVel.dpPel = drdt;//if want to use Calculation velocity
+    }
+    else if(RHcontact)
+    {
+        Fomega = cross(IMUomega2,(QP_ss.pPel-QP_ss.pRH));
+        LFVel =  -(OD.JacobianRH3D * dQrdot);
+
+        vec3 EGHA = vec3(LFVel[0],LFVel[1],LFVel[2]);
+        EGHA = WS.JointPos.qPel*EGHA;
+        drdt = Fomega + EGHA;
+        WS.JointVel.dpPel = drdt;//if want to use Calculation velocity
+    }
+    else if(LHcontact)
+    {
+        Fomega = cross(IMUomega2,(QP_ss.pPel-QP_ss.pLH));
+        LFVel =  -(OD.JacobianLH3D * dQrdot);
+
+        vec3 EGHA = vec3(LFVel[0],LFVel[1],LFVel[2]);
+        EGHA = WS.JointPos.qPel*EGHA;
+        drdt = Fomega + EGHA;
+        WS.JointVel.dpPel = drdt;//if want to use Calculation velocity
+    }
+    else{
+
+        Vector3d PELCOMVEL = OD.JacobianCOMall3D*dQrdot;
+        WS.JointVel.dpPel = dpCOM + cross(IMUomega2,QP_ss.pPel-QP_ss.pCOM) + vec3(PELCOMVEL[0],PELCOMVEL[1],PELCOMVEL[2]);
+
+    }
+    //WS.JointVel.dpPel = dpPelNumeric;//if want to use numeric
+    last_dpPel = WS.JointVel.dpPel;
+    QP_ss.dCOM = vec3(OD.COMdot[0],OD.COMdot[1],OD.COMdot[2]);
+
+    Qnow = OD.Joints2Q(WS.JointPos);
+    dQnow = OD.Joints2dQ(WS.JointVel);
+    OD.CalcCOMMomentum(Qnow,dQnow);
+    if (cnt_fly==0)  last_dCOM = vec3(OD.COMdot[0],OD.COMdot[1],OD.COMdot[2]);
+
+    return QP_ss;
+}
+
