@@ -34,3 +34,4 @@ exe/DataLog/ValveID_Data/*.txt
 share/GUI/stl
 share/OW_*
 *.pdf
+src/**/*.pro.user
